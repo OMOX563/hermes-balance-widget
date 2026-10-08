@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  html,body{margin:0;height:100vh;background:#4a4f5a;font-family:sans-serif}
+  .hint{position:fixed;top:10px;left:10px;color:#ddd;font-size:12px}
+</style>
+</head><body>
+<div class="hint">poptest: click the mascot</div>
+<script>
+const PROVIDERS = {
+  deepseek: { id:'deepseek', name:'DeepSeek', kind:'balance', currency:'CNY', keyRef:'DEEPSEEK_API_KEY' },
+};
+const PROVIDER_ORDER = ['deepseek'];
+window.MASCOTS = { deepseek: '/assets/transparent/deepseek.webp' };
+</script>
+<script type="module">
+import { mountWidget } from '/src/widget.js';
+const store = {};
+const ctx = { storage: { get: (k,d) => (k in store ? store[k] : d), set: (k,v) => { store[k]=v }, remove: (k) => { delete store[k] } } };
+window.__w = mountWidget(ctx, {});
+window.__store = store;
+</script>
+</body></html>
