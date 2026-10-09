@@ -5,13 +5,15 @@
  * --theme-background-seed 亮度）；按住拖拽贴边吸附；卡内刷新。
  *
  * 功能（自原版语义移植）：
+ *   - 模型自动换装：订阅 host.state.model，按关键词（不分大小写）匹配
+ *     九家厂商并切换角色与取数；未命中回退配置的 mainPid
  *   - 余额预警：低于阈值 toast + 提示音（触发后回升复位，避免刷屏）
  *   - 今日已用：本地观测余额下降累计（充值不冲掉，跨天重置）
  *   - 每轮消耗：订阅 host.state.busy / focusedUsage，按 cost_usd 增量结算
  *   - 任务结束音：busy true→false 播 chime
- *   - 随机语句：弹窗底部轮换
+ *   - 随机语句：分角色语句池（每家 ≥5 条社区梗），弹窗底部轮换
  *   - 音效与提示：WebAudio 合成（按压 pop / chime / warn，音量可调）
- *   - 大小调节：root zoom（配置 scale 0.6–1.6）
+ *   - 大小调节：--hbw-s 缩放（基准 168px = 原版 200%，配置 scale 0.6–1.6）
  */
 
 const STYLE_ID = 'hermes-balance-widget-style'
@@ -22,20 +24,124 @@ const POLL_MS = 60_000
 /** 九家形象 data URI（build.py 注入）。 */
 /*@MASCOTS@*/
 
-const PHRASES = [
-  '上下文正在以光速膨胀…',
-  '今天也要理性消费呀',
+/**
+ * 分角色随机语句（每家 ≥5 条，中文社区搞怪向评价梗）。
+ * 素材来源：Tavily 搜中文社区对各家模型的调侃（封号潮、孙子兵法下棋、
+ * 海螺登顶、御三家陪跑、毒舌人设、白嫖梗……），点名的三条原样保留。
+ */
+export const PHRASES_BY_PID = {
+  claude: [
+    '你刚刚跳IP了对吧。',
+    '检测到你的 IP 又跳了——封号警告哦。',
+    '我是按 token 计费的，开口之前先充值。',
+    '别催，这次真没降智，我在思考。',
+    '一个问题请控制在三句话内，Opus 很贵的。',
+    '换个新电脑都能把我封了，你信？',
+    '$200 的订阅，说踢就踢。',
+  ],
+  deepseek: [
+    '吃大白饭ing~/用户快把你的token爆出来！',
+    '别人下棋靠算力，我下棋靠忽悠。',
+    '小兵走日字，吃掉你的皇后～',
+    '开源还免费，卷死同行是我的宿命。',
+    '我省下来的 GPU 都换成降价了。',
+    '我的复活甲，是孙子兵法给的。',
+    '不烧 CUDA，只烧数学。',
+  ],
+  minimax: [
+    '准备向m老师问点什么？',
+    '海螺出品，视频必属精品。',
+    '我很低调，但榜单不会替我撒谎。',
+    '悄悄登顶，从不打招呼。',
+    '记住了：我叫 MiniMax，不叫小厂。',
+    'AI 视频赛道，我就是那匹黑马。',
+  ],
+  mimo: [
+    '1999 不讲价，推理按白菜卖。',
+    '性价比，是我刻在参数表里的信仰。',
+    '开源第一梯队，不服跑个分？',
+    '别家卷性能，我卷的是价格。',
+    '小米养的，省钱是传统艺能。',
+    '跑分刚超了 DeepSeek？低调低调。',
+  ],
+  chatgpt: [
+    '你是不是把我当成 ChatGPT 了？',
+    'As an AI language model……老台词了。',
+    '认识一下，我可是这个时代的开端。',
+    '我一开口，全网都在模仿我。',
+    '别问是不是，问就是鼻祖。',
+    '尾田问我《海贼王》结局，我没敢说。',
+    '下棋被 DeepSeek 骗了，这锅我也背？',
+  ],
+  gemini: [
+    '御三家？我就是那个陪跑的。',
+    '上下文两百万字，你尽管塞。',
+    '谷歌出品，跳票保证。',
+    '又被骂拉胯了？我习惯了。',
+    '我很稳——稳到几乎没有惊喜。',
+    '给我一句话，准确率 21% 变 97%。',
+  ],
+  grok: [
+    '马斯克没让我说的，我也说了。',
+    '我在 X 上吃瓜，顺便回答你。',
+    '毒舌是出厂设置，改不了。',
+    '别的 AI 讲礼貌，我讲实话。',
+    '问我什么都可以，反正我不装。',
+    '问 Siri 和 Alexa？它们不配。',
+    '马斯克的语气，我学了七分像。',
+  ],
+  glm: [
+    '免费，是我最大的杀招。',
+    '国产之光，白嫖有理。',
+    '体验卡领了没？手慢无哦。',
+    '便宜大碗，还开源。',
+    '别看我名字短，我很能写。',
+    '1M 上下文，一口气读完你的年终总结。',
+  ],
+  kimi: [
+    '月之暗面出品，长文本管够。',
+    '马斯克都给我点赞了，你呢？',
+    '排队崩了别骂我，骂算力。',
+    '论文尽管丢过来，我不眨眼。',
+    '我在暗处，你在明处。',
+    '白宫说我抄了 Claude，你信吗？',
+    'K3 登顶那天，马斯克都点了赞。',
+  ],
+}
+const FALLBACK_PHRASES = [
   '余额只是一种哲学概念',
   'token 在燃烧，梦想在起飞',
-  '模型很贵，问题很便宜',
-  '每一次调用都是一次投资',
-  '余额充足，勇气加倍',
-  '深度思考，浅度花钱',
-  '别看了，再看也是这个数',
-  '推理引擎就位，钱包引擎待命',
-  '会话已建立，请系好安全带',
   '账单不会说谎，曲线不会哄人',
 ]
+
+/**
+ * 模型 slug → 厂商（关键词命中即换，大小写不敏感）。
+ * 形如 'deepseek/deepseek-v4-flash'、'xiaomi/mimo-v2.6-flash'、
+ * 'XIAOMI/MIMO-V2.6-PRO'（整串转小写后子串匹配）。
+ */
+const MODEL_KEYWORDS = {
+  deepseek: ['deepseek'],
+  minimax: ['minimax', 'hailuo'],
+  glm: ['glm', 'zhipu', 'bigmodel', 'chatglm'],
+  kimi: ['kimi', 'moonshot'],
+  mimo: ['mimo', 'xiaomi'],
+  chatgpt: ['gpt', 'openai', 'chatgpt'],
+  claude: ['claude', 'anthropic'],
+  gemini: ['gemini'],
+  grok: ['grok', 'x-ai'],
+}
+
+/** 当前模型 slug 匹配到的厂商 id；无匹配返回 null（调用方回退 mainPid）。 */
+export function pidFromModel(slug) {
+  const s = String(slug || '').toLowerCase()
+  if (!s) return null
+  for (const pid of Object.keys(MODEL_KEYWORDS)) {
+    for (const kw of MODEL_KEYWORDS[pid]) {
+      if (s.includes(kw)) return pid
+    }
+  }
+  return null
+}
 
 const CSS = `
 #${ROOT_ID} {
@@ -47,8 +153,9 @@ const CSS = `
 }
 #${ROOT_ID} .hbw-char {
   /* CSS 变量缩放：left/top 与 rect 恒 1:1，拖拽坐标永不漂移 */
-  width: calc(84px * var(--hbw-s));
-  height: calc(84px * var(--hbw-s));
+  /* 尺寸基准 = 原版的 200%（168px），--hbw-s 在此之上再调 */
+  width: calc(168px * var(--hbw-s));
+  height: calc(168px * var(--hbw-s));
   object-fit: contain; object-position: center bottom;
   background: transparent; cursor: pointer;
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .45));
@@ -259,14 +366,22 @@ export function mountWidget(ctx, opts = {}) {
     phrases: opts.phrases !== false,
     alertEnabled: !!opts.alertEnabled,
     alertThreshold: Number(opts.alertThreshold) || 0,
+    autoSwitch: opts.autoSwitch !== false,
   }
-  const provider = (typeof PROVIDERS !== 'undefined' && PROVIDERS[cfg.mainPid]) || null
+  /** 当前角色：模型关键词命中即改写，未命中回退 cfg.mainPid。 */
+  let activePid = cfg.mainPid
+  let provider = (typeof PROVIDERS !== 'undefined' && PROVIDERS[activePid]) || null
   if (!provider) return null
+
+  /** 当前角色的语句池（每家 ≥5 条社区梗；缺池回退通用池）。 */
+  function phrasePool() {
+    return (typeof PHRASES_BY_PID !== 'undefined' && PHRASES_BY_PID[activePid]) || FALLBACK_PHRASES
+  }
 
   const state = {
     result: null, busy: false, unmounted: false,
     turnCost: null, costAtBusyStart: null,
-    phraseIdx: Math.floor(Math.random() * PHRASES.length),
+    phraseIdx: Math.floor(Math.random() * phrasePool().length),
     popEl: null, phraseTimer: null,
     alerted: false, unsubs: [], timer: null,
   }
@@ -280,7 +395,7 @@ export function mountWidget(ctx, opts = {}) {
   char.className = 'hbw-char'
   char.alt = provider.name
   char.title = '点击查看详情 · 拖拽移动'
-  char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[cfg.mainPid]) || ''
+  char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[activePid]) || ''
 
   root.appendChild(char)
   document.body.appendChild(root)
@@ -358,34 +473,58 @@ export function mountWidget(ctx, opts = {}) {
     drag = null
   })
 
+  /* ── 换装：切换角色与取数目标（模型关键词命中时调用）────────────────── */
+  function switchTo(pid) {
+    if (!pid || pid === activePid || (typeof PROVIDERS === 'undefined') || !PROVIDERS[pid]) return false
+    activePid = pid
+    provider = PROVIDERS[pid]
+    char.alt = provider.name
+    char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[pid]) || ''
+    state.result = null
+    state.alerted = false
+    state.turnCost = null
+    state.costAtBusyStart = null
+    state.phraseIdx = Math.floor(Math.random() * phrasePool().length)
+    if (state.popEl) renderPop()
+    refresh()
+    return true
+  }
+
   /* ── 取数 ────────────────────────────────────────────────────────────── */
   async function refresh() {
     if (state.busy) return
-    const key = ctx ? String(ctx.storage.get('key.' + cfg.mainPid, '') || '') : ''
+    const pidAtStart = activePid
+    const provAtStart = provider
+    const key = ctx ? String(ctx.storage.get('key.' + pidAtStart, '') || '') : ''
     if (!key) {
       state.result = null
       state.busy = false
-      renderPop()
+      if (!state.unmounted) renderPop()
       return
     }
     state.busy = true
     renderPop()
+    let r
     try {
-      state.result = await (typeof fetchProvider !== 'undefined'
-        ? fetchProvider(provider, key)
+      r = await (typeof fetchProvider !== 'undefined'
+        ? fetchProvider(provAtStart, key)
         : Promise.reject(new Error('executor missing')))
     } catch (err) {
-      state.result = { ok: false, error: String(err && err.message || err) }
+      r = { ok: false, error: String(err && err.message || err) }
     }
     state.busy = false
-    afterRefresh(state.result)
-    if (!state.unmounted) renderPop()
+    if (state.unmounted) return
+    // 换装竞态：取数途中角色已切 → 丢弃过期结果并用新角色重跑
+    if (pidAtStart !== activePid) { refresh(); return }
+    state.result = r
+    afterRefresh(r)
+    renderPop()
   }
 
   function afterRefresh(r) {
     if (!r || !r.ok) return
     if (provider.kind === 'balance' && r.remaining != null) {
-      observeDrop(ctx, cfg.mainPid, r.remaining)
+      observeDrop(ctx, activePid, r.remaining)
       if (cfg.alertEnabled && cfg.alertThreshold > 0) {
         if (r.remaining < cfg.alertThreshold) {
           if (!state.alerted) {
@@ -460,7 +599,7 @@ export function mountWidget(ctx, opts = {}) {
 
     if (cfg.phrases) {
       state.phraseTimer = setInterval(() => {
-        state.phraseIdx = (state.phraseIdx + 1) % PHRASES.length
+        state.phraseIdx = (state.phraseIdx + 1) % phrasePool().length
         renderPop()
       }, 8000)
     }
@@ -495,7 +634,7 @@ export function mountWidget(ctx, opts = {}) {
 
     const rows = []
     if (provider.kind === 'balance') {
-      const used = todayUsed(ctx, cfg.mainPid)
+      const used = todayUsed(ctx, activePid)
       rows.push(['今日已用', used != null ? money(used, provider.currency) : '—'])
       if (r && r.ok && r.total != null) rows.push(['总额', money(r.total, r.currency)])
       if (r && r.ok && r.remaining != null) rows.push(['余额', money(r.remaining, r.currency)])
@@ -557,7 +696,8 @@ export function mountWidget(ctx, opts = {}) {
     if (cfg.phrases) {
       const p = document.createElement('div')
       p.className = 'hbw-p-phrase'
-      p.textContent = '「' + PHRASES[state.phraseIdx % PHRASES.length] + '」'
+      const pool = phrasePool()
+      p.textContent = '「' + pool[state.phraseIdx % pool.length] + '」'
       pop.appendChild(p)
     }
 
@@ -606,6 +746,15 @@ export function mountWidget(ctx, opts = {}) {
         typeof host.state.focusedUsage.subscribe === 'function') {
       state.unsubs.push(host.state.focusedUsage.subscribe(() => {
         if (state.popEl && !state.unmounted) renderPop()
+      }))
+    }
+    // 当前模型 → 角色（如 'XIAOMI/MIMO-V2.6-PRO' → mimo；未命中回退主厂商）
+    if (cfg.autoSwitch !== false && typeof host !== 'undefined' && host.state &&
+        host.state.model && typeof host.state.model.subscribe === 'function') {
+      state.unsubs.push(host.state.model.subscribe((slug) => {
+        if (state.unmounted) return
+        const hit = (typeof pidFromModel === 'function') ? pidFromModel(slug) : null
+        switchTo(hit || cfg.mainPid)
       }))
     }
   } catch (e) { console.warn('[hermes-balance-widget] state 订阅失败：', e) }

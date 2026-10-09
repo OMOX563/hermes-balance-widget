@@ -156,6 +156,42 @@ try {
     assert.ok(src.includes(needle), 'phase2.5 presence: ' + needle)
   }
 
+  /* ── ⑤b 模型自动换装 + 分角色语句池 + 200% 尺寸基准 ───────────────────── */
+  // 关键词匹配（不分大小写；slug 形如 provider/model）
+  assert.equal(mod.pidFromModel('DeepSeek/DeepSeek-V4-Flash'), 'deepseek', 'upper slug → deepseek')
+  assert.equal(mod.pidFromModel('deepseek/deepseek-v4-flash'), 'deepseek', 'lower slug → deepseek')
+  assert.equal(mod.pidFromModel('XIAOMI/MIMO-V2.6-PRO'), 'mimo', 'XIAOMI/MIMO mixed upper → mimo')
+  assert.equal(mod.pidFromModel('xiaomi/mimo-v2.6-flash'), 'mimo', 'xiaomi → mimo')
+  assert.equal(mod.pidFromModel('MiniMax/minimax-m2.5'), 'minimax', 'MiniMax → minimax')
+  assert.equal(mod.pidFromModel('anthropic/claude-sonnet-4.5'), 'claude', 'anthropic → claude')
+  assert.equal(mod.pidFromModel('x-ai/grok-4'), 'grok', 'x-ai → grok')
+  assert.equal(mod.pidFromModel('zhipu/glm-4.7'), 'glm', 'zhipu → glm')
+  assert.equal(mod.pidFromModel('moonshotai/kimi-k2'), 'kimi', 'moonshot → kimi')
+  assert.equal(mod.pidFromModel('google/gemini-3.1-pro'), 'gemini', 'gemini hit')
+  assert.equal(mod.pidFromModel('openai/gpt-5.2'), 'chatgpt', 'openai/gpt → chatgpt')
+  assert.equal(mod.pidFromModel('qwen/qwen3-max'), null, 'unknown slug → null (回退 mainPid)')
+  assert.equal(mod.pidFromModel(''), null, 'empty → null')
+  assert.equal(mod.pidFromModel(null), null, 'null → null')
+  // 每个角色 ≥5 条语句
+  assert.equal(Object.keys(mod.PHRASES_BY_PID).length, 9, 'nine phrase pools')
+  for (const id of expected) {
+    const pool = mod.PHRASES_BY_PID[id]
+    assert.ok(Array.isArray(pool) && pool.length >= 5, id + ' phrases >= 5 (got ' + (pool && pool.length) + ')')
+    for (const s of pool) assert.ok(typeof s === 'string' && s.trim().length > 0, id + ' phrase non-empty')
+  }
+  // 用户点名的三条原样在池
+  assert.ok(mod.PHRASES_BY_PID.claude.includes('你刚刚跳IP了对吧。'), 'claude sample verbatim')
+  assert.ok(mod.PHRASES_BY_PID.deepseek.includes('吃大白饭ing~/用户快把你的token爆出来！'), 'deepseek sample verbatim')
+  assert.ok(mod.PHRASES_BY_PID.minimax.includes('准备向m老师问点什么？'), 'minimax sample verbatim')
+  // 200% 尺寸基准 + 换装接线
+  for (const needle of [
+    'calc(168px * var(--hbw-s))',   // 尺寸基准 = 原版 84px 的 200%
+    'host.state.model',             // 订阅当前模型
+    'switchTo',                      // 换装函数
+    'autoSwitch',                    // 开关配置
+    'phrasePool',                    // 分池取句
+  ]) assert.ok(src.includes(needle), 'auto-switch presence: ' + needle)
+
   /* ── ⑥ 注册结构 ─────────────────────────────────────────────────────── */
   const contributions = []
   const stored = new Map()

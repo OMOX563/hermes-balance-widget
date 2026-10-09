@@ -45,6 +45,7 @@ function readCfgLocal(ctx) {
     phrases: g('phrases', true) !== false,
     alertEnabled: !!g('alertEnabled', false),
     alertThreshold: Number(g('alertThreshold', 0)) || 0,
+    autoSwitch: g('autoSwitch', true) !== false,
   }
 }
 function writeCfgLocal(ctx, patch) {
@@ -60,6 +61,7 @@ function remountWidget() {
     enabled: cfg.enabled, mainPid: cfg.mainPid, pos: cfg.pos,
     scale: cfg.scale, sfx: cfg.sfx, sfxVolume: cfg.sfxVolume,
     phrases: cfg.phrases, alertEnabled: cfg.alertEnabled, alertThreshold: cfg.alertThreshold,
+    autoSwitch: cfg.autoSwitch,
   })
 }
 
@@ -169,6 +171,7 @@ function WidgetControls() {
   const [sfx, setSfx] = useState(cfg.sfx)
   const [volume, setVolume] = useState(cfg.sfxVolume)
   const [phrases, setPhrases] = useState(cfg.phrases)
+  const [autoSwitch, setAutoSwitch] = useState(cfg.autoSwitch)
   const [alertOn, setAlertOn] = useState(cfg.alertEnabled)
   const [threshold, setThreshold] = useState(cfg.alertThreshold ? String(cfg.alertThreshold) : '')
 
@@ -237,7 +240,14 @@ function WidgetControls() {
           },
         }),
       ] }),
-      jsx('div', { style: SECTION, children: '主厂商（决定挂件形象与显示数据，点按即切换）' }),
+      jsx(ToggleRow, {
+        checked: autoSwitch,
+        label: '跟随当前模型自动换角色（按关键词匹配，不分大小写）',
+        onChange: (v) => { setAutoSwitch(v); writeCfgLocal(gCtx, { autoSwitch: v }); remountWidget() },
+      }),
+      jsx('div', { style: SECTION, children: autoSwitch
+        ? '主厂商（模型关键词未命中时的回退角色，点按即切换）'
+        : '主厂商（决定挂件形象与显示数据，点按即切换）' }),
       jsxs('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 6 }, children:
         PROVIDER_ORDER.map((pid) => {
           const active = pid === mainPid
@@ -306,6 +316,7 @@ export default {
         enabled: cfg.enabled, mainPid: cfg.mainPid, pos: cfg.pos,
         scale: cfg.scale, sfx: cfg.sfx, sfxVolume: cfg.sfxVolume,
         phrases: cfg.phrases, alertEnabled: cfg.alertEnabled, alertThreshold: cfg.alertThreshold,
+        autoSwitch: cfg.autoSwitch,
       })
     } catch (err) {
       console.error('[hermes-balance-widget] 挂件挂载异常：', err)
