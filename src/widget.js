@@ -13,7 +13,7 @@
  *   - 任务结束音：busy true→false 播 chime
  *   - 随机语句：分角色语句池（每家 ≥5 条社区梗），弹窗底部轮换
  *   - 音效与提示：WebAudio 合成（按压 pop / chime / warn，音量可调）
- *   - 大小调节：--hbw-s 缩放（基准 336px = 原版 400%，配置 scale 0.6–1.6）
+ *   - 大小调节：--hbw-s 缩放（基准 235px = 336px 的 70%，配置 scale 0.6–1.6）
  */
 
 const STYLE_ID = 'hermes-balance-widget-style'
@@ -153,9 +153,9 @@ const CSS = `
 }
 #${ROOT_ID} .hbw-char {
   /* CSS 变量缩放：left/top 与 rect 恒 1:1，拖拽坐标永不漂移 */
-  /* 尺寸基准 = 原版的 400%（336px），--hbw-s 在此之上再调 */
-  width: calc(336px * var(--hbw-s));
-  height: calc(336px * var(--hbw-s));
+  /* 尺寸基准 = 上一版 336px 的 70%（235px），--hbw-s 在此之上再调 */
+  width: calc(235px * var(--hbw-s));
+  height: calc(235px * var(--hbw-s));
   object-fit: contain; object-position: center bottom;
   background: transparent; cursor: pointer;
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .45));
