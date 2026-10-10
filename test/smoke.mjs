@@ -407,6 +407,19 @@ try {
   assert.ok(src.includes("当前' + sch.label"), 'settings shows live schedule tier')
   assert.ok(src.includes('Coding Plan 积分 50% 抵扣'), 'settings shows glm schedule note')
 
+  /* ── ⑤f 头部层级徽标（纯探活不渲染）───────────────────────────────── */
+  assert.equal(mod.tierBadges([{ kind: 'probe' }]), '', 'pure probe → no badge text')
+  assert.equal(mod.tierBadges([{ kind: 'probe' }, { kind: 'probe' }]), '', 'all probe → no badge text')
+  assert.equal(mod.tierBadges([{ kind: 'balance' }, { kind: 'probe' }]), '真余额', 'balance + probe')
+  assert.equal(mod.tierBadges([]), '', 'no sources → no badge text')
+  // 真实厂商：kimi 三源聚合为「真余额 + 订阅」，mimo 单探活源为空
+  assert.equal(mod.tierBadges(mod.PROVIDERS.kimi.sources), '真余额 + 订阅', 'kimi aggregated badge')
+  assert.equal(mod.tierBadges(mod.PROVIDERS.mimo.sources), '', 'mimo is probe-only → no badge')
+  assert.equal(mod.tierBadges(mod.PROVIDERS.minimax.sources), '订阅', 'minimax quota-only badge')
+  // 渲染接线：纯探活不再出现旧回退文案，且徽标为条件挂载
+  assert.ok(!src.includes('探活 · 无余额接口'), 'old probe fallback badge string removed')
+  assert.ok(src.includes('if (badgeTxt)'), 'badge conditionally attached to header')
+
   /* ── ⑥ 注册结构 ─────────────────────────────────────────────────────── */
   const contributions = []
   const stored = new Map()

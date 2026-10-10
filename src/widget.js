@@ -424,14 +424,17 @@ function todayUsed(ctx, pid) {
   return obs.used
 }
 
-/** 头部徽标：聚合该厂商全部源的层级（如「真余额 + 订阅」）；纯探活 → 探活。 */
-function tierBadges(sources) {
+/**
+ * 头部徽标：聚合该厂商全部源的层级（如「真余额 + 订阅」）。
+ * 纯探活厂商（官方无余额接口）返回空串 → 不渲染徽标，气泡头部只留厂商名。
+ */
+export function tierBadges(sources) {
   const t = []
   for (const s of sources || []) {
     const label = s.kind === 'balance' ? '真余额' : s.kind === 'quota' ? '订阅' : null
     if (label && !t.includes(label)) t.push(label)
   }
-  return t.length ? t.join(' + ') : '探活 · 无余额接口'
+  return t.join(' + ')
 }
 
 export function mountWidget(ctx, opts = {}) {
@@ -825,11 +828,15 @@ export function mountWidget(ctx, opts = {}) {
     const nameEl = document.createElement('span')
     nameEl.className = 'hbw-p-name'
     nameEl.textContent = provider.name
-    const badge = document.createElement('span')
-    badge.className = 'hbw-p-badge'
-    badge.textContent = tierBadges(srcs)
     head.appendChild(nameEl)
-    head.appendChild(badge)
+    // 纯探活厂商不显示层级徽标（无余额接口本就不是需要一眼看到的信息）
+    const badgeTxt = tierBadges(srcs)
+    if (badgeTxt) {
+      const badge = document.createElement('span')
+      badge.className = 'hbw-p-badge'
+      badge.textContent = badgeTxt
+      head.appendChild(badge)
+    }
     pop.appendChild(head)
 
     const emitRows = (rows) => {
