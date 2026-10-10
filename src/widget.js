@@ -131,6 +131,26 @@ const MODEL_KEYWORDS = {
   grok: ['grok', 'x-ai'],
 }
 
+/**
+ * 点击热区：各家形象 bbox 的水平内缩百分比（对称，相对图片宽度）。
+ * 数据来源 assets/transparent/*.webp 的 alpha bbox 实测——各角色宽窄差异大
+ * （mimo 两侧各空 29%、minimax 只空 12%），热区跟着角色走，透明侧翼与
+ * 图片上方留白不再劫持点击。竖向贴边（bbox_y0=0.051 为发顶留白）走负
+ * inset：视觉上保住 drop-shadow 投影，命中则被盒界钳制不外扩（Chromium
+ * 实测 elementFromPoint 盒外恒 miss）。
+ */
+export const HITBOX = {
+  deepseek: 18.23, minimax: 12.50, glm: 27.34, kimi: 16.41, mimo: 29.17,
+  chatgpt: 27.08, claude: 22.14, gemini: 19.53, grok: 19.79,
+}
+
+/** 该角色的 clip-path：两侧按 bbox 内缩 16px（≈投影半径），上下负值放行投影。 */
+function hitClip(pid) {
+  const x = HITBOX[pid]
+  if (x == null) return 'none'
+  return 'inset(-16px calc(' + x + '% - 16px) -20px calc(' + x + '% - 16px))'
+}
+
 /** 当前模型 slug 匹配到的厂商 id；无匹配返回 null（调用方回退 mainPid）。 */
 export function pidFromModel(slug) {
   const s = String(slug || '').toLowerCase()
@@ -149,13 +169,18 @@ const CSS = `
   display: flex; flex-direction: column; align-items: center; gap: 4px;
   font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   user-select: none; -webkit-user-select: none;
+  /* 热区外（bbox 侧翼 sliver）穿透回页面：点击落到下方元素、弹窗正常关闭 */
+  pointer-events: none;
   --hbw-s: 1;
 }
 #${ROOT_ID} .hbw-char {
   /* CSS 变量缩放：left/top 与 rect 恒 1:1，拖拽坐标永不漂移 */
   /* 尺寸基准 = 上一版 336px 的 70%（235px），--hbw-s 在此之上再调 */
   width: calc(235px * var(--hbw-s));
-  height: calc(235px * var(--hbw-s));
+  /* 高度 = 内容高（384×214 等比）：去掉图片上方 104px 空盒，气泡也因
+   * rect 收窄而紧贴头顶（尖角落在发顶上方 ~3px） */
+  height: auto;
+  pointer-events: auto;
   object-fit: contain; object-position: center bottom;
   background: transparent; cursor: pointer;
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .45));
@@ -396,6 +421,9 @@ export function mountWidget(ctx, opts = {}) {
   char.alt = provider.name
   char.title = '点击查看详情 · 拖拽移动'
   char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[activePid]) || ''
+  char.style.clipPath = hitClip(activePid)
+  // height:auto 在图片解码前 intrinsic 比例未知，加载后按真实盒重摆一次
+  char.addEventListener('load', () => place({ x: parseFloat(root.style.left), y: parseFloat(root.style.top) }))
 
   root.appendChild(char)
   document.body.appendChild(root)
@@ -480,6 +508,7 @@ export function mountWidget(ctx, opts = {}) {
     provider = PROVIDERS[pid]
     char.alt = provider.name
     char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[pid]) || ''
+    char.style.clipPath = hitClip(pid)
     state.result = null
     state.alerted = false
     state.turnCost = null

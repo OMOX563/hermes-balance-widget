@@ -192,6 +192,22 @@ try {
     'phrasePool',                    // 分池取句
   ]) assert.ok(src.includes(needle), 'auto-switch presence: ' + needle)
 
+  /* ── ⑤c 点击热区（按各家 bbox 收窄）─────────────────────────────────── */
+  assert.equal(Object.keys(mod.HITBOX).length, 9, 'nine hitboxes')
+  for (const id of expected) {
+    const x = mod.HITBOX[id]
+    assert.ok(typeof x === 'number' && x > 0 && x < 35, id + ' hitbox sane: ' + x)
+  }
+  // 宽窄差异真实存在（minimax 最宽 12.5%、mimo 最窄 29.2% 内缩）
+  assert.ok(mod.HITBOX.minimax < mod.HITBOX.mimo, 'minimax wider than mimo')
+  for (const needle of [
+    'clipPath',                      // 热区套用
+    'pointer-events: none',          // root 穿透（sliver 落回页面）
+    'pointer-events: auto',          // 角色本体恢复命中
+    'height: auto',                  // 盒高 = 内容高（去 104px 空盒）
+    '.addEventListener(\'load\'',    // 解码后重摆
+  ]) assert.ok(src.includes(needle), 'hitbox presence: ' + needle)
+
   /* ── ⑥ 注册结构 ─────────────────────────────────────────────────────── */
   const contributions = []
   const stored = new Map()
