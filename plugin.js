@@ -1039,9 +1039,14 @@ function observeDrop(ctx, pid, current) {
   ctx.storage.set(key, obs)
   return obs.used
 }
-function todayUsed(ctx, pid) {
+/**
+ * 今日已用（读完整存储键，形如 obs.deepseek / obs.kimi.payg）。
+ * 调用方传 obsKey(...) 的返回值，这里不再拼 'obs.' 前缀——
+ * 早先拼了两遍（obs.obs.<pid>）导致真余额厂商该行恒为 ¥0。
+ */
+export function todayUsed(ctx, key) {
   if (!ctx) return null
-  const obs = ctx.storage.get('obs.' + pid, null)
+  const obs = ctx.storage.get(key, null)
   if (!obs || obs.day !== todayKey()) return 0
   return obs.used
 }
@@ -1428,18 +1433,12 @@ export function mountWidget(ctx, opts = {}) {
           : r.status ? ('HTTP ' + r.status + (r.parse ? ' · 字段未命中' : ''))
           : (r.note || '取数失败')])
       } else if (src.kind === 'probe') {
-        // 「状态 ✓ key 可用」与重复的「今日估算」行已删：
+        // 「状态 ✓ key 可用」、重复的「今日估算」与「分时折算」行均已删：
         // 状态由 headline 的 ✓ 承载，估算值就是 headline 本身
         const est = probeEstimate(activePid)
         if (est && est.tok && (est.tok.in > 0 || est.tok.out > 0)) {
           rows.push(['今日输入', fmtTokens(est.tok.in) + ' tok'])
           rows.push(['今日输出', fmtTokens(est.tok.out) + ' tok'])
-          if (est.sch && !est.sch.peak) {
-            rows.push(['分时', est.sch.label + ' ×' + est.sch.sc.discMult + ' 已折算'])
-          } else if (est.tok.d && (est.tok.d.in > 0 || est.tok.d.out > 0)) {
-            rows.push(['分时', '含' + (est.sch ? est.sch.sc.discLabel : '非高峰') + '用量 ×'
-              + ((est.sch && est.sch.sc.discMult) || 0.8) + ' 折算'])
-          }
         }
       }
       return rows
@@ -1730,7 +1729,7 @@ import { useState } from 'react'
 
 const ID = 'hermes-balance-widget'
 /** 版本号：发布时与 git tag 同步（Releases 里的 plugin.js 资产即此版本）。 */
-export const VERSION = '1.1.1'
+export const VERSION = '1.1.2'
 
 /** Phase 1 的取数结果只活在组件态里，不落 storage。 */
 let gCtx = null
