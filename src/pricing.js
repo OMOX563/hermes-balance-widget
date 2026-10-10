@@ -105,8 +105,8 @@ export const SCHEDULES = {
     isPeak: (p) => p.dow >= 1 && p.dow <= 5 && p.h >= 14 && p.h < 18,
   },
   mimo: {
-    discMult: 0.8, peakLabel: 'bug时段', discLabel: '雷峰塔时段',
-    note: '分时：雷峰塔时段 0:00-8:00（北京时间）×0.8（日间为 bug 时段原价）',
+    discMult: 0.8, peakLabel: 'bug时段', discLabel: '雷布斯时段',
+    note: '分时：雷布斯时段 0:00-8:00（北京时间）×0.8（日间为 bug 时段原价）',
     isPeak: (p) => !(p.h >= 0 && p.h < 8),
   },
 }

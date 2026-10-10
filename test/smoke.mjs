@@ -298,7 +298,7 @@ try {
     { cur: 'CNY', in: 1, out: 1, hit: 0 })
   assert.equal(cost3, 0, 'inHit clamped to inTotal (all billed at hit=0)')
   // 今日 token 观测：增量、换会话回卷、跨天重置（exported for test）
-  // now 注入北京 12:00（mimo 高峰）——不注入的话凌晨（雷峰塔时段）跑测试
+  // now 注入北京 12:00（mimo 高峰）——不注入的话凌晨（雷布斯时段）跑测试
   // 增量会分流进 d 桶，下面按 base 桶断言就会挂；分时分流本身由 ⑤e 覆盖
   const peakNoon = new Date('2026-10-14T04:00:00Z')
   const mem = new Map()
