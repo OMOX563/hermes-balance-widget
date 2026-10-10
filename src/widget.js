@@ -16,7 +16,7 @@
  *   - 任务结束音：busy true→false 播 chime
  *   - 随机语句：分角色语句池（每家 ≥5 条社区梗），弹窗底部轮换
  *   - 音效与提示：WebAudio 合成（按压 pop / chime / warn，音量可调）
- *   - 大小调节：--hbw-s 缩放（基准 235px = 336px 的 70%，配置 scale 0.6–1.6）
+ *   - 大小调节：--hbw-s 缩放（基准 124px 角色高、宽随 bbox，scale 0.6–1.6）
  */
 
 const STYLE_ID = 'hermes-balance-widget-style'
@@ -134,26 +134,6 @@ const MODEL_KEYWORDS = {
   grok: ['grok', 'x-ai'],
 }
 
-/**
- * 点击热区：各家形象 bbox 的水平内缩百分比（对称，相对图片宽度）。
- * 数据来源 assets/transparent/*.webp 的 alpha bbox 实测——各角色宽窄差异大
- * （mimo 两侧各空 29%、minimax 只空 12%），热区跟着角色走，透明侧翼与
- * 图片上方留白不再劫持点击。竖向贴边（bbox_y0=0.051 为发顶留白）走负
- * inset：视觉上保住 drop-shadow 投影，命中则被盒界钳制不外扩（Chromium
- * 实测 elementFromPoint 盒外恒 miss）。
- */
-export const HITBOX = {
-  deepseek: 18.23, minimax: 12.50, glm: 27.34, kimi: 16.41, mimo: 29.17,
-  chatgpt: 27.08, claude: 22.14, gemini: 19.53, grok: 19.79,
-}
-
-/** 该角色的 clip-path：两侧按 bbox 内缩 16px（≈投影半径），上下负值放行投影。 */
-function hitClip(pid) {
-  const x = HITBOX[pid]
-  if (x == null) return 'none'
-  return 'inset(-16px calc(' + x + '% - 16px) -20px calc(' + x + '% - 16px))'
-}
-
 /** 当前模型 slug 匹配到的厂商 id；无匹配返回 null（调用方回退 mainPid）。 */
 export function pidFromModel(slug) {
   const s = String(slug || '').toLowerCase()
@@ -178,13 +158,14 @@ const CSS = `
 }
 #${ROOT_ID} .hbw-char {
   /* CSS 变量缩放：left/top 与 rect 恒 1:1，拖拽坐标永不漂移 */
-  /* 尺寸基准 = 上一版 336px 的 70%（235px），--hbw-s 在此之上再调 */
-  width: calc(235px * var(--hbw-s));
-  /* 高度 = 内容高（384×214 等比）：去掉图片上方 104px 空盒，气泡也因
-   * rect 收窄而紧贴头顶（尖角落在发顶上方 ~3px） */
-  height: auto;
+  /* 素材已紧裁到角色 alpha bbox（各家宽 160–288 × 高 203）：
+   * - 定高 = 原 235px 定宽时的等效角色高（235×214/384×203/214 ≈ 124px），
+   *   角色视觉大小不变，左右/上方画布留白清零，盒贴角色本身
+   * - 宽度 auto 随各家角色实际宽窄走（mimo 98px ~ minimax 176px）
+   * - clip-path 热区收窄已随素材紧裁移除（再裁会切到角色本体） */
+  height: calc(124px * var(--hbw-s));
+  width: auto;
   pointer-events: auto;
-  object-fit: contain; object-position: center bottom;
   background: transparent; cursor: pointer;
   filter: drop-shadow(0 4px 10px rgba(0, 0, 0, .45));
   transform-origin: center bottom;
@@ -487,7 +468,6 @@ export function mountWidget(ctx, opts = {}) {
   char.alt = provider.name
   char.title = '点击查看详情 · 拖拽移动'
   char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[activePid]) || ''
-  char.style.clipPath = hitClip(activePid)
   // height:auto 在图片解码前 intrinsic 比例未知，加载后按真实盒重摆一次
   char.addEventListener('load', () => place({ x: parseFloat(root.style.left), y: parseFloat(root.style.top) }))
 
@@ -574,7 +554,6 @@ export function mountWidget(ctx, opts = {}) {
     provider = PROVIDERS[pid]
     char.alt = provider.name
     char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[pid]) || ''
-    char.style.clipPath = hitClip(pid)
     state.results = null
     state.alerted = {}
     state.turnCost = null

@@ -240,28 +240,24 @@ try {
   assert.ok(mod.PHRASES_BY_PID.minimax.includes('准备向m老师问点什么？'), 'minimax sample verbatim')
   // 200% 尺寸基准 + 换装接线
   for (const needle of [
-    'calc(235px * var(--hbw-s))',   // 尺寸基准 = 336px 的 70%
+    'calc(124px * var(--hbw-s))',   // 定高基准（角色高，宽随 bbox）
     'host.state.model',             // 订阅当前模型
     'switchTo',                      // 换装函数
     'autoSwitch',                    // 开关配置
     'phrasePool',                    // 分池取句
   ]) assert.ok(src.includes(needle), 'auto-switch presence: ' + needle)
 
-  /* ── ⑤c 点击热区（按各家 bbox 收窄）─────────────────────────────────── */
-  assert.equal(Object.keys(mod.HITBOX).length, 9, 'nine hitboxes')
-  for (const id of expected) {
-    const x = mod.HITBOX[id]
-    assert.ok(typeof x === 'number' && x > 0 && x < 35, id + ' hitbox sane: ' + x)
-  }
-  // 宽窄差异真实存在（minimax 最宽 12.5%、mimo 最窄 29.2% 内缩）
-  assert.ok(mod.HITBOX.minimax < mod.HITBOX.mimo, 'minimax wider than mimo')
+  /* ── ⑤c 盒模型（素材紧裁 bbox，盒贴角色）────────────────────────────── */
+  // clip-path 热区已随紧裁删除：素材侧留白清零后再裁会切到角色本体
+  assert.ok(!src.includes('hitClip'), 'clip-path hitbox removed after tight crop')
+  assert.ok(!src.includes('HITBOX'), 'HITBOX table removed')
   for (const needle of [
-    'clipPath',                      // 热区套用
-    'pointer-events: none',          // root 穿透（sliver 落回页面）
+    'calc(124px * var(--hbw-s))',    // 定高 = 原 235px 定宽的等效角色高
+    'width: auto',                   // 宽随各家角色实际宽窄
+    'pointer-events: none',          // root 穿透（盒外落回页面）
     'pointer-events: auto',          // 角色本体恢复命中
-    'height: auto',                  // 盒高 = 内容高（去 104px 空盒）
     '.addEventListener(\'load\'',    // 解码后重摆
-  ]) assert.ok(src.includes(needle), 'hitbox presence: ' + needle)
+  ]) assert.ok(src.includes(needle), 'box model presence: ' + needle)
 
   /* ── ⑤d token 计价（默认牌价 / 自定义覆盖 / 估算）────────────────────── */
   // 九家都有默认牌价且币种合法
