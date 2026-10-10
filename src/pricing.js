@@ -94,19 +94,19 @@ export function fmtTokens(n) {
  */
 export const SCHEDULES = {
   deepseek: {
-    discMult: 0.5, peakLabel: '高峰', discLabel: '空闲',
-    note: '分时：工作日 9-12/14-18 为高峰（北京时间），空闲 ×0.5，周末全天空闲',
+    discMult: 0.5, peakLabel: '小楠梁时段', discLabel: '梁圣时段',
+    note: '分时：工作日 9-12/14-18 为小楠梁时段（北京时间），梁圣时段 ×0.5，周末全天梁圣',
     isPeak: (p) => p.dow >= 1 && p.dow <= 5 &&
       ((p.h >= 9 && p.h < 12) || (p.h >= 14 && p.h < 18)),
   },
   glm: {
-    discMult: 0.5, peakLabel: '高峰', discLabel: '非高峰',
-    note: '分时：工作日 14-18 为高峰（北京时间），其余时段 ×0.5（Coding Plan 积分 50% 抵扣）',
+    discMult: 0.5, peakLabel: '贼时段', discLabel: '一哥时段',
+    note: '分时：工作日 14-18 为贼时段（北京时间），一哥时段 ×0.5（Coding Plan 积分 50% 抵扣）',
     isPeak: (p) => p.dow >= 1 && p.dow <= 5 && p.h >= 14 && p.h < 18,
   },
   mimo: {
-    discMult: 0.8, peakLabel: '日间', discLabel: '夜间',
-    note: '分时：夜间 0:00-8:00（北京时间）×0.8',
+    discMult: 0.8, peakLabel: 'bug时段', discLabel: '雷峰塔时段',
+    note: '分时：雷峰塔时段 0:00-8:00（北京时间）×0.8（日间为 bug 时段原价）',
     isPeak: (p) => !(p.h >= 0 && p.h < 8),
   },
 }

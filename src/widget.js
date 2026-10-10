@@ -678,6 +678,17 @@ export function mountWidget(ctx, opts = {}) {
 
   function togglePop() {
     if (state.popEl) { closePop(); return }
+    // 每次打开换一条随机语句（池 >1 时保证与上一条不同）
+    {
+      const pool = phrasePool()
+      if (pool.length > 1) {
+        let n = state.phraseIdx
+        while (n === state.phraseIdx) n = Math.floor(Math.random() * pool.length)
+        state.phraseIdx = n
+      } else {
+        state.phraseIdx = Math.floor(Math.random() * pool.length)
+      }
+    }
     const pop = document.createElement('div')
     pop.id = POP_ID
     pop.setAttribute('data-theme', isLightTheme() ? 'light' : 'dark')
@@ -798,7 +809,7 @@ export function mountWidget(ctx, opts = {}) {
           if (est.sch && !est.sch.peak) {
             rows.push(['分时', est.sch.label + ' ×' + est.sch.sc.discMult + ' 已折算'])
           } else if (est.tok.d && (est.tok.d.in > 0 || est.tok.d.out > 0)) {
-            rows.push(['分时', '含' + (est.sch ? '非高峰' : '') + '用量 ×'
+            rows.push(['分时', '含' + (est.sch ? est.sch.sc.discLabel : '非高峰') + '用量 ×'
               + ((est.sch && est.sch.sc.discMult) || 0.8) + ' 折算'])
           }
         } else if (est && est.why) {
