@@ -234,9 +234,11 @@ try {
     assert.ok(Array.isArray(pool) && pool.length >= 5, id + ' phrases >= 5 (got ' + (pool && pool.length) + ')')
     for (const s of pool) assert.ok(typeof s === 'string' && s.trim().length > 0, id + ' phrase non-empty')
   }
-  // 用户点名的三条原样在池
+  // 用户点名的原样在池（deepseek 那句经用户确认拆成两条）
   assert.ok(mod.PHRASES_BY_PID.claude.includes('你刚刚跳IP了对吧。'), 'claude sample verbatim')
-  assert.ok(mod.PHRASES_BY_PID.deepseek.includes('吃大白饭ing~/用户快把你的token爆出来！'), 'deepseek sample verbatim')
+  assert.ok(mod.PHRASES_BY_PID.deepseek.includes('吃大白饭ing~')
+    && mod.PHRASES_BY_PID.deepseek.includes('用户快把你的token爆出来！'),
+    'deepseek sample verbatim (split in two)')
   assert.ok(mod.PHRASES_BY_PID.minimax.includes('准备向m老师问点什么？'), 'minimax sample verbatim')
   // 200% 尺寸基准 + 换装接线
   for (const needle of [
