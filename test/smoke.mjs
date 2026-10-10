@@ -185,7 +185,7 @@ try {
   assert.ok(mod.PHRASES_BY_PID.minimax.includes('准备向m老师问点什么？'), 'minimax sample verbatim')
   // 200% 尺寸基准 + 换装接线
   for (const needle of [
-    'calc(168px * var(--hbw-s))',   // 尺寸基准 = 原版 84px 的 200%
+    'calc(336px * var(--hbw-s))',   // 尺寸基准 = 原版 84px 的 400%
     'host.state.model',             // 订阅当前模型
     'switchTo',                      // 换装函数
     'autoSwitch',                    // 开关配置
