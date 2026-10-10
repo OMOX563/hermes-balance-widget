@@ -44,13 +44,13 @@ shell = read('shell.js')
 
 # 2. 相对 import 剥除（函数在拼接后的同一模块里直接可见）
 shell = sub(shell,
-            "import { PROVIDERS, PROVIDER_ORDER, providerTier } from './providers.js'\n",
+            "import { PROVIDERS, PROVIDER_ORDER, sourceTier, srcKey } from './providers.js'\n",
             '', 1, 'shell-import-providers')
 shell = sub(shell,
             "import { mountWidget, unmountWidget } from './widget.js'\n",
             '', 1, 'shell-import-widget')
 shell = sub(shell,
-            "import { fetchProvider } from './balance.js'\n",
+            "import { fetchSource } from './balance.js'\n",
             '', 1, 'shell-import-balance')
 
 # 3. 三个源文件都不应再有任何相对 import

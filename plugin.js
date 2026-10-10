@@ -3,147 +3,252 @@
  * 由 build.py 从 src/ 组装生成，勿直接编辑。源码结构与出处见 src/ 与 README。
  */
 /**
- * hermes-balance-widget — 九家厂商取数模板
+ * hermes-balance-widget — 九家厂商取数模板（多源版）
  * ============================================================================
  * 结构与字段语义移植自 dsh-whale-widget 的 API_TEMPLATES（MIT © MeteorNOX），
  * 按本插件九家清单裁剪；mimo 模板为实测自写（原版无此厂商）。
  *
- * 三种取数层级（与原版一致）：
- *   kind: 'balance' —— 真余额：balance.url + json.remaining 字段路径
+ * 每个厂商 sources[] 可挂多个取数源，订阅与按量付费分开成条：
+ *   kind: 'balance' —— 按量付费真余额：balance.url + json.remaining 字段路径
  *   kind: 'quota'   —— 订阅额度：quota.url + 窗口结构（简单字段 / windows 数组）
- *   noBalanceApi    —— 官方无余额接口：余额显示「—」，probeUrl 仅探活验证 key
+ *   kind: 'probe'   —— 探活：probeUrl 验证 key（官方无余额接口时的如实兜底）
+ *
+ * 源索引即存储约定：idx=0 用 key.<pid>（兼容旧存储零迁移），其余 key.<pid>.<sid>。
  *
  * 字段路径语法（执行器实现于 balance.js）：支持 a.b[0].c，可选 scale 乘数。
- * auth 模板三种：'Bearer {key}' / '{key}'（裸值，智谱风格）/ ''（key 走 url 或探活不需要）。
+ * auth 模板三种：'Bearer {key}' / '{key}'（裸值，智谱风格）/ ''（不带 Authorization）。
+ * headers 额外请求头（如 Claude 探活的 x-api-key + anthropic-version），值支持 {key} 占位。
  */
+
+/** 存储 key：第一源沿用 key.<pid>（老配置零迁移），其余带源 id 后缀。 */
+export function srcKey(pid, idx, sid) {
+  return idx === 0 ? 'key.' + pid : 'key.' + pid + '.' + sid
+}
+/** 今日已用观测 key：同存储约定（obs 前缀），保住已累计的历史数据。 */
+export function obsKey(pid, idx, sid) {
+  return idx === 0 ? 'obs.' + pid : 'obs.' + pid + '.' + sid
+}
 
 export const PROVIDERS = {
   deepseek: {
     name: 'DeepSeek',
-    currency: 'CNY',
-    keyRef: 'DEEPSEEK_API_KEY',
-    kind: 'balance',
-    balance: {
-      url: 'https://api.deepseek.com/user/balance',
-      auth: 'Bearer {key}',
-      json: { remaining: 'balance_infos[0].total_balance' },
-    },
-    probeUrl: 'https://api.deepseek.com/models',
+    sources: [
+      {
+        id: 'payg', label: '按量付费', kind: 'balance', currency: 'CNY',
+        keyRef: 'DEEPSEEK_API_KEY',
+        balance: {
+          url: 'https://api.deepseek.com/user/balance',
+          auth: 'Bearer {key}',
+          json: { remaining: 'balance_infos[0].total_balance' },
+        },
+      },
+    ],
+    apiNote: 'DeepSeek 无订阅（Coding Plan）接口——/user/subscription 等实测 404，仅提供按量付费余额',
   },
 
   minimax: {
     name: 'MiniMax',
-    currency: 'CNY',
-    keyRef: 'MINIMAX_API_KEY',
-    kind: 'quota',
-    // 国内端点；2026-10-08 用真实 key 实测返回 5h/周双窗口数据。
-    // 订阅额度接口仅对 Coding Plan 订阅账号有效（资源包账号会报「不存在 coding plan」）。
-    quota: {
-      url: 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains',
-      auth: 'Bearer {key}',
-      json: {
-        remainPct: 'model_remains[0].current_interval_remaining_percent',
-        weeklyRemainPct: 'model_remains[0].current_weekly_remaining_percent',
-        resetAtMs: 'model_remains[0].end_time',
+    sources: [
+      {
+        id: 'sub_cn', label: '订阅 · 国内', kind: 'quota', currency: 'CNY',
+        keyRef: 'MINIMAX_API_KEY',
+        // 国内端点；2026-10-08 用真实 key 实测返回 5h/周双窗口数据。
+        quota: {
+          url: 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains',
+          auth: 'Bearer {key}',
+          json: {
+            remainPct: 'model_remains[0].current_interval_remaining_percent',
+            weeklyRemainPct: 'model_remains[0].current_weekly_remaining_percent',
+            resetAtMs: 'model_remains[0].end_time',
+          },
+        },
+        apiNote: '仅对 Coding Plan 订阅账号有效（资源包账号报「不存在 coding plan」）',
       },
-    },
-    probeUrl: 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains',
+      {
+        id: 'sub_intl', label: '订阅 · 国际', kind: 'quota', currency: 'USD',
+        keyRef: 'MINIMAX_INTL_API_KEY',
+        quota: {
+          url: 'https://api.minimax.io/v1/api/openplatform/coding_plan/remains',
+          auth: 'Bearer {key}',
+          json: {
+            remainPct: 'model_remains[0].current_interval_remaining_percent',
+            weeklyRemainPct: 'model_remains[0].current_weekly_remaining_percent',
+            resetAtMs: 'model_remains[0].end_time',
+          },
+        },
+        apiNote: '国际站（api.minimax.io）独立账号体系，key 与国内站不通用',
+      },
+    ],
+    apiNote: '按量付费余额仅 Admin Key 可查（/v1/account/balance，API key 实测 403 token_type_mismatch）→ 未接入',
   },
 
   glm: {
     name: '智谱 GLM',
-    currency: 'CNY',
-    keyRef: 'ZHIPU_API_KEY',
-    kind: 'quota',
-    // 智谱此接口鉴权不带 Bearer（裸 key）；data.limits[] 为扁平条目数组，
-    // 5h 窗口不保证排在 [0] —— 按 type(+unit) 选：unit=3 → 5h，unit=6 → 周。
-    quota: {
-      url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
-      auth: '{key}',
-      json: {
-        windows: [
-          {
-            key: 'rolling', label: '5h',
-            pick: { list: 'data.limits', types: ['TOKENS_LIMIT', 'CREDIT_LIMIT'], unit: 3 },
-            percent: 'percentage', resetAt: 'nextResetTime',
+    sources: [
+      {
+        id: 'sub_cn', label: '订阅 · 国内', kind: 'quota', currency: 'CNY',
+        keyRef: 'ZHIPU_API_KEY',
+        // 智谱此接口鉴权不带 Bearer（裸 key）；data.limits[] 为扁平条目数组，
+        // 5h 窗口不保证排在 [0] —— 按 type(+unit) 选：unit=3 → 5h，unit=6 → 周。
+        quota: {
+          url: 'https://open.bigmodel.cn/api/monitor/usage/quota/limit',
+          auth: '{key}',
+          json: {
+            windows: [
+              {
+                key: 'rolling', label: '5h',
+                pick: { list: 'data.limits', types: ['TOKENS_LIMIT', 'CREDIT_LIMIT'], unit: 3 },
+                percent: 'percentage', resetAt: 'nextResetTime',
+              },
+              {
+                key: 'weekly', label: '周',
+                pick: { list: 'data.limits', types: ['TOKENS_LIMIT', 'CREDIT_LIMIT'], unit: 6 },
+                percent: 'percentage', resetAt: 'nextResetTime',
+              },
+            ],
           },
-          {
-            key: 'weekly', label: '周',
-            pick: { list: 'data.limits', types: ['TOKENS_LIMIT', 'CREDIT_LIMIT'], unit: 6 },
-            percent: 'percentage', resetAt: 'nextResetTime',
-          },
-        ],
+        },
+        apiNote: '订阅（TOKENS_LIMIT）与按量充值账号（CREDIT_LIMIT）同走此接口，按 type 自动识别；按量付费余额金额无公开接口（候选路径实测全 404）',
       },
-    },
-    probeUrl: 'https://open.bigmodel.cn/api/paas/v4/models',
+      {
+        id: 'sub_intl', label: '订阅 · 国际', kind: 'quota', currency: 'USD',
+        keyRef: 'ZHIPU_INTL_API_KEY',
+        quota: {
+          url: 'https://api.z.ai/api/monitor/usage/quota/limit',
+          auth: '{key}',
+          json: {
+            windows: [
+              {
+                key: 'rolling', label: '5h',
+                pick: { list: 'data.limits', types: ['TOKENS_LIMIT', 'CREDIT_LIMIT'], unit: 3 },
+                percent: 'percentage', resetAt: 'nextResetTime',
+              },
+              {
+                key: 'weekly', label: '周',
+                pick: { list: 'data.limits', types: ['TOKENS_LIMIT', 'CREDIT_LIMIT'], unit: 6 },
+                percent: 'percentage', resetAt: 'nextResetTime',
+              },
+            ],
+          },
+        },
+        apiNote: '国际站 z.ai 独立账号体系，key 与国内站不通用',
+      },
+    ],
+    apiNote: '按量付费（充值余额）无公开查询接口，四个候选路径 2026-10-10 实测全 404',
   },
 
   kimi: {
-    name: 'Kimi / Moonshot（CN）',
-    currency: 'CNY',
-    keyRef: 'MOONSHOT_API_KEY',
-    kind: 'balance',
-    // 大陆站：余额为人民币（充值 + 代金券合计），v724 原版实测 200 且字段命中。
-    balance: {
-      url: 'https://api.moonshot.cn/v1/users/me/balance',
-      auth: 'Bearer {key}',
-      json: { remaining: 'data.available_balance' },
-    },
-    probeUrl: 'https://api.moonshot.cn/v1/models',
+    name: 'Kimi / Moonshot',
+    sources: [
+      {
+        id: 'payg_cn', label: '按量付费 · 国内', kind: 'balance', currency: 'CNY',
+        keyRef: 'MOONSHOT_API_KEY',
+        // 大陆站：余额为人民币（充值 + 代金券合计），v724 原版实测 200 且字段命中。
+        balance: {
+          url: 'https://api.moonshot.cn/v1/users/me/balance',
+          auth: 'Bearer {key}',
+          json: { remaining: 'data.available_balance' },
+        },
+      },
+      {
+        id: 'coding', label: '订阅 · Kimi Coding', kind: 'quota', currency: 'CNY',
+        keyRef: 'KIMI_CODING_KEY',
+        // 原版模板（v724）：usage.remaining/limit 为剩余额度对，resetTime 重置时刻。
+        quota: {
+          url: 'https://api.kimi.com/coding/v1/usages',
+          auth: 'Bearer {key}',
+          json: { remain: 'usage.remaining', total: 'usage.limit', resetAt: 'usage.resetTime' },
+        },
+        apiNote: 'Kimi Coding 订阅独立 key（kimi.com/code 控制台获取），与 Moonshot API key 不通用',
+      },
+      {
+        id: 'payg_intl', label: '按量付费 · 国际', kind: 'balance', currency: 'USD',
+        keyRef: 'MOONSHOT_INTL_API_KEY',
+        balance: {
+          url: 'https://api.moonshot.ai/v1/users/me/balance',
+          auth: 'Bearer {key}',
+          json: { remaining: 'data.available_balance' },
+        },
+        apiNote: '国际站（api.moonshot.ai）独立账号体系，余额按美元计',
+      },
+    ],
   },
 
   mimo: {
     name: '小米 MiMo（token-plan）',
-    currency: 'CNY',
-    keyRef: 'MIMO_TOKENPLAN_KEY',
-    noBalanceApi: true,
-    // 自写模板：2026-10-08 实测 token-plan 端点常见余额路径全 404、响应头无限额字段。
-    apiNote: 'token-plan 端点无余额接口（实测常见路径 404）→ 余额「—」，今日已用按会话估算',
-    probeUrl: 'https://token-plan-cn.xiaomimimo.com/v1/models',
-    balance: { url: '', auth: 'Bearer {key}', json: { remaining: '' } },
+    sources: [
+      {
+        id: 'probe', label: '探活', kind: 'probe', currency: 'CNY',
+        keyRef: 'MIMO_TOKENPLAN_KEY',
+        probeUrl: 'https://token-plan-cn.xiaomimimo.com/v1/models',
+        auth: 'Bearer {key}',
+        // 自写模板：2026-10-08 实测 token-plan 端点常见余额路径全 404、响应头无限额字段；
+        // 2026-10-10 复测 dashboard/billing、user/account balance 等 8 条路径仍全 404。
+        apiNote: 'token-plan 端点无余额/计费接口（两轮共 12 条路径实测全 404）→ 余额「—」，今日已用按会话估算',
+      },
+    ],
+    apiNote: 'token-plan 端点无余额/计费接口（两轮共 12 条路径实测全 404）',
   },
 
   chatgpt: {
     name: 'OpenAI / ChatGPT',
-    currency: 'USD',
-    keyRef: 'OPENAI_API_KEY',
-    noBalanceApi: true,
-    apiNote: '官方已下线 billing 余额接口，无「用 API key 查余额」的公开接口 → 余额「—」，今日已用按会话估算',
+    sources: [
+      {
+        id: 'probe', label: '探活', kind: 'probe', currency: 'USD',
+        keyRef: 'OPENAI_API_KEY',
+        probeUrl: 'https://api.openai.com/v1/models',
+        auth: 'Bearer {key}',
+        apiNote: '官方已下线 billing 余额接口，无「用 API key 查余额」的公开接口 → 余额「—」，今日已用按会话估算',
+      },
+    ],
     matchIds: ['gpt', 'o1-', 'o3-', 'o4-', 'chatgpt'],
-    probeUrl: 'https://api.openai.com/v1/models',
-    balance: { url: '', auth: 'Bearer {key}', json: { remaining: '' } },
+    apiNote: '按量消费仅 Admin Key（OpenAI 管理密钥，控制台生成）可查 GET /v1/organization/costs → 未接入；普通 key 只能探活',
   },
 
   claude: {
     name: 'Anthropic Claude',
-    currency: 'USD',
-    keyRef: 'ANTHROPIC_API_KEY',
-    noBalanceApi: true,
-    apiNote: '官方无余额接口；用量走 Admin API（需 admin key）或控制台。探活需 x-api-key + anthropic-version 双请求头，本插件暂不提供探活 → 余额「—」',
+    sources: [
+      {
+        id: 'probe', label: '探活', kind: 'probe', currency: 'USD',
+        keyRef: 'ANTHROPIC_API_KEY',
+        probeUrl: 'https://api.anthropic.com/v1/models',
+        // 探活需 x-api-key + anthropic-version 双请求头（2026-10-10 接入，此前无探活）。
+        headers: { 'x-api-key': '{key}', 'anthropic-version': '2023-06-01' },
+        apiNote: '200 即 key 可用；余额/消费需 Admin Key（cost_report）→ 未接入',
+      },
+    ],
     matchIds: ['claude'],
-    balance: { url: '', auth: 'Bearer {key}', json: { remaining: '' } },
+    apiNote: '官方无余额接口；用量走 Admin API（需 Anthropic 管理密钥，控制台生成）或控制台查看',
   },
 
   gemini: {
     name: 'Google Gemini',
-    currency: 'USD',
-    keyRef: 'GEMINI_API_KEY',
-    noBalanceApi: true,
-    apiNote: '官方无余额接口（配额在 AI Studio / Cloud 控制台）→ 余额「—」，今日已用按会话估算；探活走 ?key= 形式',
+    sources: [
+      {
+        id: 'probe', label: '探活', kind: 'probe', currency: 'USD',
+        keyRef: 'GEMINI_API_KEY',
+        probeUrl: 'https://generativelanguage.googleapis.com/v1beta/models?key={key}',
+        auth: '',
+        apiNote: '官方无余额接口（配额在 AI Studio / Cloud 控制台）→ 余额「—」，今日已用按会话估算；探活走 ?key= 形式',
+      },
+    ],
     matchIds: ['gemini'],
-    probeUrl: 'https://generativelanguage.googleapis.com/v1beta/models?key={key}',
-    balance: { url: '', auth: '', json: { remaining: '' } },
+    apiNote: '官方无余额接口（配额在 AI Studio / Cloud 控制台）',
   },
 
   grok: {
     name: 'xAI Grok',
-    currency: 'USD',
-    keyRef: 'XAI_API_KEY',
-    noBalanceApi: true,
-    apiNote: '官方无公开余额查询接口（额度在 console.x.ai）→ 余额「—」，今日已用按会话估算',
+    sources: [
+      {
+        id: 'probe', label: '探活', kind: 'probe', currency: 'USD',
+        keyRef: 'XAI_API_KEY',
+        probeUrl: 'https://api.x.ai/v1/models',
+        auth: 'Bearer {key}',
+        apiNote: '官方无公开余额查询接口（额度在 console.x.ai）→ 余额「—」，今日已用按会话估算',
+      },
+    ],
     matchIds: ['grok'],
-    probeUrl: 'https://api.x.ai/v1/models',
-    balance: { url: '', auth: 'Bearer {key}', json: { remaining: '' } },
+    apiNote: '官方无公开余额查询接口（额度在 console.x.ai）',
   },
 }
 
@@ -152,23 +257,26 @@ export const PROVIDER_ORDER = [
   'deepseek', 'minimax', 'glm', 'kimi', 'mimo', 'chatgpt', 'claude', 'gemini', 'grok',
 ]
 
-/** 层级描述（UI 标签用）。 */
-export function providerTier(p) {
-  if (p.kind === 'balance') return 'balance'
-  if (p.kind === 'quota') return 'quota'
+/** 单源层级（UI 徽标用）：balance 真余额 / quota 订阅额度 / probe 探活。 */
+export function sourceTier(s) {
+  if (s && s.kind === 'balance') return 'balance'
+  if (s && s.kind === 'quota') return 'quota'
   return 'probe'
 }
 
 
 /**
- * hermes-balance-widget — 取数执行器
+ * hermes-balance-widget — 取数执行器（多源版）
  * ============================================================================
- * 模板驱动的三态取数：真余额 / 订阅额度 / 探活。纯函数 + 注入式 fetch，
- * 便于 smoke 测试与浏览器/任何运行时复用。
+ * 模板驱动的三态取数：按量付费真余额 / 订阅额度 / 探活。纯函数 + 注入式
+ * fetch，便于 smoke 测试与浏览器/任何运行时复用。单个厂商 sources[] 可挂
+ * 多条（订阅与按量付费分开），fetchAll 逐源取数汇总。
  *
- * fetchBalance(provider, key)  → { ok, remaining, total?, currency, raw? }
- * fetchQuota(provider, key)    → { ok, windows: [{key,label,percent,resetAt?}], ... }
- * probe(provider, key)         → { ok, status, note? }
+ * fetchBalance(src, key)     → { ok, remaining, total?, currency, ... }
+ * fetchQuota(src, key)       → { ok, windows: [{key,label,percent,resetAt?}], ... }
+ * probe(src, key)            → { ok, status, note? }
+ * fetchSource(src, key)      → 按 src.kind 三态分发，结果挂 srcLabel/srcTier
+ * fetchAll(provider, keyFor) → [{ src, result }]（缺 key 的源记 unconfigured）
  */
 
 /* ── 字段路径：支持 a.b[0].c，找不到返回 undefined ──────────────────────── */
@@ -191,17 +299,22 @@ function num(obj, path, scale) {
   return scale ? n * scale : n
 }
 
-/** auth 模板 → 请求头对象。'' 返回 {}。 */
-export function buildHeaders(authTpl, key) {
+/**
+ * auth 模板 → 请求头对象。'' 返回 {}。
+ * extra 为 headers 表（源级额外请求头，如 Claude 探活双头），值支持 {key} 占位。
+ * 裸值模板（智谱风格：auth === '{key}'）直接作为 Authorization；其余按模板原样。
+ */
+export function buildHeaders(authTpl, key, extra) {
+  const out = {}
   const tpl = String(authTpl || '')
-  if (!tpl) return {}
-  const value = tpl.replace('{key}', key || '')
-  // 裸值模板（智谱风格：auth === '{key}'）直接作为 Authorization；其余按模板原样
-  const isBearer = /^Bearer\s/i.test(value)
-  return { Authorization: value }
+  if (tpl) out.Authorization = tpl.replace('{key}', key || '')
+  if (extra && typeof extra === 'object') {
+    for (const k of Object.keys(extra)) out[k] = String(extra[k]).replace('{key}', key || '')
+  }
+  return out
 }
 
-/** url 模板：{key} {base} 占位替换。 */
+/** url 模板：{key} 占位替换（URL 编码）。 */
 function buildUrl(tpl, key) {
   return String(tpl || '').replace('{key}', encodeURIComponent(key || ''))
 }
@@ -210,38 +323,43 @@ function mergeHeaders(...parts) {
   return Object.assign({}, ...parts.filter(Boolean))
 }
 
-/* ── 真余额 ─────────────────────────────────────────────────────────────── */
-export async function fetchBalance(provider, key, fetchImpl = fetch) {
-  const b = provider && provider.balance
-  if (!b || !b.url || provider.noBalanceApi) {
-    return { ok: false, unsupported: true, note: provider && provider.apiNote }
+/* ── 按量付费真余额 ─────────────────────────────────────────────────────── */
+export async function fetchBalance(src, key, fetchImpl = fetch) {
+  const b = src && src.balance
+  if (!b || !b.url || (src.kind && src.kind !== 'balance')) {
+    return { ok: false, unsupported: true, note: src && src.apiNote }
   }
   try {
     const res = await fetchImpl(buildUrl(b.url, key), {
-      headers: mergeHeaders(buildHeaders(b.auth, key), { Accept: 'application/json' }),
+      headers: mergeHeaders(buildHeaders(b.auth, key, b.headers), { Accept: 'application/json' }),
     })
     if (!res.ok) return { ok: false, status: res.status }
     const body = await res.json()
+    const bizMsg = body && body.success === false ? (body.msg || body.message) : null
+    if (bizMsg) return { ok: false, note: bizMsg }
     const remaining = num(body, b.json && b.json.remaining, b.json && b.json.remainingScale)
     const total = num(body, b.json && b.json.total, b.json && b.json.totalScale)
     const used = num(body, b.json && b.json.used, b.json && b.json.usedScale)
     if (remaining === null && total === null) return { ok: false, status: res.status, parse: true }
-    return { ok: true, remaining, total: total, used: used, currency: provider.currency }
+    return { ok: true, remaining, total: total, used: used, currency: src.currency }
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) }
   }
 }
 
 /* ── 订阅额度 ───────────────────────────────────────────────────────────── */
-export async function fetchQuota(provider, key, fetchImpl = fetch) {
-  const q = provider && provider.quota
-  if (!q || !q.url) return { ok: false, unsupported: true }
+export async function fetchQuota(src, key, fetchImpl = fetch) {
+  const q = src && src.quota
+  if (!q || !q.url || (src.kind && src.kind !== 'quota')) return { ok: false, unsupported: true }
   try {
     const res = await fetchImpl(buildUrl(q.url, key), {
-      headers: mergeHeaders(buildHeaders(q.auth, key), { Accept: 'application/json' }),
+      headers: mergeHeaders(buildHeaders(q.auth, key, q.headers), { Accept: 'application/json' }),
     })
     if (!res.ok) return { ok: false, status: res.status }
     const body = await res.json()
+    // 业务层错误（HTTP 200 + success:false，如智谱「当前用户不存在coding plan」）→ 透出 msg
+    const bizMsg = body && body.success === false ? (body.msg || body.message) : null
+    if (bizMsg) return { ok: false, note: bizMsg }
 
     // 形态 ①：多窗口 windows[]（智谱 data.limits pick / OpenCode 三窗口）
     if (q.json && Array.isArray(q.json.windows)) {
@@ -284,19 +402,21 @@ export async function fetchQuota(provider, key, fetchImpl = fetch) {
         })
       }
     }
-    return windows.length ? { ok: true, windows, currency: provider.currency } : { ok: false, parse: true }
+    return windows.length ? { ok: true, windows, currency: src.currency } : { ok: false, parse: true }
   } catch (err) {
     return { ok: false, error: String((err && err.message) || err) }
   }
 }
 
 /* ── 探活（无余额接口的厂商：只验证 key）────────────────────────────────── */
-export async function probe(provider, key, fetchImpl = fetch) {
-  const url = provider && provider.probeUrl
-  if (!url) return { ok: false, unsupported: true, note: provider && provider.apiNote }
+export async function probe(src, key, fetchImpl = fetch) {
+  const url = src && src.probeUrl
+  if (!url) return { ok: false, unsupported: true, note: src && src.apiNote }
   try {
+    // auth 优先取源级 src.auth（'' 表示不带 Authorization，走 ?key= 形式）
+    const authTpl = src.auth !== undefined ? src.auth : (src.balance && src.balance.auth)
     const res = await fetchImpl(buildUrl(url, key), {
-      headers: mergeHeaders(buildHeaders(provider.balance && provider.balance.auth, key)),
+      headers: mergeHeaders(buildHeaders(authTpl, key, src.headers)),
     })
     // gemini ?key= 形式 200 即活；401/403 即 key 无效；404 也常代表 key 权限不足
     return { ok: res.ok, status: res.status }
@@ -305,11 +425,34 @@ export async function probe(provider, key, fetchImpl = fetch) {
   }
 }
 
-/** 统一入口：按模板层级自动选择取数方式。 */
-export async function fetchProvider(provider, key, fetchImpl = fetch) {
-  if (provider.kind === 'balance') return fetchBalance(provider, key, fetchImpl)
-  if (provider.kind === 'quota') return fetchQuota(provider, key, fetchImpl)
-  return { ...(await probe(provider, key, fetchImpl)), probeOnly: true }
+/** 单源按 kind 分发（缺 key 由调用方先拦）。 */
+export async function fetchSource(src, key, fetchImpl = fetch) {
+  if (src.kind === 'balance') return fetchBalance(src, key, fetchImpl)
+  if (src.kind === 'quota') return fetchQuota(src, key, fetchImpl)
+  return { ...(await probe(src, key, fetchImpl)), probeOnly: true }
+}
+
+/**
+ * 逐源取数：keyFor(src, idx) 返回该源的 key（空串 = 未配置）。
+ * 返回 [{ src, result }]，顺序与 provider.sources 一致。
+ */
+export async function fetchAll(provider, keyFor, fetchImpl = fetch) {
+  const sources = (provider && provider.sources) || []
+  const out = []
+  for (let i = 0; i < sources.length; i++) {
+    const src = sources[i]
+    const key = String(keyFor(src, i) || '')
+    if (!key) {
+      out.push({ src, result: { ok: false, unconfigured: true, note: src.apiNote || '未配置 key' } })
+      continue
+    }
+    try {
+      out.push({ src, result: await fetchSource(src, key, fetchImpl) })
+    } catch (err) {
+      out.push({ src, result: { ok: false, error: String((err && err.message) || err) } })
+    }
+  }
+  return out
 }
 
 
@@ -579,6 +722,20 @@ const CSS = `
 }
 #${POP_ID} .hbw-p-btn:hover { filter: brightness(1.06); }
 #${POP_ID} .hbw-p-time { font-size: 10.5px; opacity: .5; font-variant-numeric: tabular-nums; }
+/* 多源分节：每个取数源一节（订阅 / 按量付费分开成条） */
+#${POP_ID} .hbw-p-sec {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 650; letter-spacing: .02em;
+  margin-top: 9px; padding-top: 8px;
+  border-top: 1px solid rgba(128,128,128,.22);
+}
+#${POP_ID} .hbw-p-sec.first { margin-top: 4px; padding-top: 0; border-top: none; }
+#${POP_ID}[data-theme="light"] .hbw-p-sec { border-top-color: rgba(0,0,0,.08); }
+#${POP_ID} .hbw-p-sec .st { font-size: 10px; font-weight: 600; opacity: .62; }
+#${POP_ID} .hbw-p-v2 {
+  font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;
+  letter-spacing: .01em; margin-top: 2px;
+}
 
 /* 漫画对话气泡尖角：指向角色头部（--hbw-tail-x 由 JS 按角色中心计算） */
 #${POP_ID}::after, #${POP_ID}::before {
@@ -697,10 +854,14 @@ function todayUsed(ctx, pid) {
   return obs.used
 }
 
-function fieldTier(provider) {
-  if (provider.kind === 'balance') return '真余额'
-  if (provider.kind === 'quota') return '订阅额度'
-  return '探活 · 无余额接口'
+/** 头部徽标：聚合该厂商全部源的层级（如「真余额 + 订阅」）；纯探活 → 探活。 */
+function tierBadges(sources) {
+  const t = []
+  for (const s of sources || []) {
+    const label = s.kind === 'balance' ? '真余额' : s.kind === 'quota' ? '订阅' : null
+    if (label && !t.includes(label)) t.push(label)
+  }
+  return t.length ? t.join(' + ') : '探活 · 无余额接口'
 }
 
 export function mountWidget(ctx, opts = {}) {
@@ -729,11 +890,12 @@ export function mountWidget(ctx, opts = {}) {
   }
 
   const state = {
-    result: null, busy: false, unmounted: false,
+    /** [{ src, result }]，顺序与 provider.sources 一致；null = 尚未首查。 */
+    results: null, busy: false, unmounted: false,
     turnCost: null, costAtBusyStart: null,
     phraseIdx: Math.floor(Math.random() * phrasePool().length),
     popEl: null, phraseTimer: null,
-    alerted: false, unsubs: [], timer: null,
+    alerted: {}, unsubs: [], timer: null,
   }
 
   /* ── 根（角色贴纸）───────────────────────────────────────────────────── */
@@ -834,8 +996,8 @@ export function mountWidget(ctx, opts = {}) {
     char.alt = provider.name
     char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[pid]) || ''
     char.style.clipPath = hitClip(pid)
-    state.result = null
-    state.alerted = false
+    state.results = null
+    state.alerted = {}
     state.turnCost = null
     state.costAtBusyStart = null
     state.phraseIdx = Math.floor(Math.random() * phrasePool().length)
@@ -844,57 +1006,66 @@ export function mountWidget(ctx, opts = {}) {
     return true
   }
 
-  /* ── 取数 ────────────────────────────────────────────────────────────── */
+  /* ── 取数（多源：每源独立读 key，缺 key 的源记 unconfigured）─────────── */
   async function refresh() {
     if (state.busy) return
     const pidAtStart = activePid
     const provAtStart = provider
-    const key = ctx ? String(ctx.storage.get('key.' + pidAtStart, '') || '') : ''
-    if (!key) {
-      state.result = null
+    const hasAnyKey = (provAtStart.sources || []).some((s, i) =>
+      ctx && String(ctx.storage.get(srcKey(pidAtStart, i, s.id), '') || '').trim())
+    if (!hasAnyKey) {
+      state.results = (provAtStart.sources || []).map((src) => ({
+        src, result: { ok: false, unconfigured: true, note: src.apiNote || '未配置 key' },
+      }))
       state.busy = false
       if (!state.unmounted) renderPop()
       return
     }
     state.busy = true
     renderPop()
-    let r
+    let res
     try {
-      r = await (typeof fetchProvider !== 'undefined'
-        ? fetchProvider(provAtStart, key)
+      res = await (typeof fetchAll !== 'undefined'
+        ? fetchAll(provAtStart, (src, i) =>
+            ctx ? String(ctx.storage.get(srcKey(pidAtStart, i, src.id), '') || '').trim() : '')
         : Promise.reject(new Error('executor missing')))
     } catch (err) {
-      r = { ok: false, error: String(err && err.message || err) }
+      res = (provAtStart.sources || []).map((src) => ({
+        src, result: { ok: false, error: String(err && err.message || err) },
+      }))
     }
     state.busy = false
     if (state.unmounted) return
     // 换装竞态：取数途中角色已切 → 丢弃过期结果并用新角色重跑
     if (pidAtStart !== activePid) { refresh(); return }
-    state.result = r
-    afterRefresh(r)
+    state.results = res
+    afterRefresh(res)
     renderPop()
   }
 
-  function afterRefresh(r) {
-    if (!r || !r.ok) return
-    if (provider.kind === 'balance' && r.remaining != null) {
-      observeDrop(ctx, activePid, r.remaining)
-      if (cfg.alertEnabled && cfg.alertThreshold > 0) {
-        if (r.remaining < cfg.alertThreshold) {
-          if (!state.alerted) {
-            state.alerted = true
-            try {
-              if (typeof host !== 'undefined') host.notify({
-                kind: 'warning',
-                message: provider.name + ' 余额预警：' + money(r.remaining, r.currency) +
-                         ' 低于阈值 ' + money(cfg.alertThreshold, r.currency),
-              })
-            } catch (e) { /* noop */ }
-            if (cfg.sfx) sfx.warn(cfg.sfxVolume)
-          }
-        } else {
-          state.alerted = false
+  /** 逐源后处理：真余额源做今日已用观测与阈值预警（按源独立记账防串扰）。 */
+  function afterRefresh(res) {
+    if (!Array.isArray(res)) return
+    for (const { src, result: r } of res) {
+      if (!r || !r.ok || src.kind !== 'balance' || r.remaining == null) continue
+      const idx = provider.sources.indexOf(src)
+      observeDrop(ctx, obsKey(activePid, idx, src.id), r.remaining)
+      if (!cfg.alertEnabled || !(cfg.alertThreshold > 0)) continue
+      const aid = activePid + '.' + src.id
+      if (r.remaining < cfg.alertThreshold) {
+        if (!state.alerted[aid]) {
+          state.alerted[aid] = true
+          try {
+            if (typeof host !== 'undefined') host.notify({
+              kind: 'warning',
+              message: provider.name + ' ' + src.label + ' 余额预警：' + money(r.remaining, r.currency) +
+                       ' 低于阈值 ' + money(cfg.alertThreshold, r.currency),
+            })
+          } catch (e) { /* noop */ }
+          if (cfg.sfx) sfx.warn(cfg.sfxVolume)
         }
+      } else {
+        state.alerted[aid] = false
       }
     }
   }
@@ -963,46 +1134,71 @@ export function mountWidget(ctx, opts = {}) {
   function renderPop() {
     const pop = state.popEl
     if (!pop || state.unmounted) return
-    const r = state.result
+    const srcs = provider.sources || []
+    const res = state.results
+    const multi = srcs.length > 1
+
+    // 主展示源：第一个取数成功的；退而求其次第一个已配置的；再退第一个源
+    let primary = res && (res.find((x) => x.result && x.result.ok && !x.result.probeOnly)
+      || res.find((x) => x.result && x.result.ok)
+      || res.find((x) => x.result && !x.result.unconfigured)
+      || res[0])
+
+    const pSrc = primary && primary.src
+    const pr = primary && primary.result
 
     let big = '…'
     let sub = ''
-    if (!r && state.busy) { big = '…'; sub = '取数中' }
-    else if (!r) { big = '—'; sub = '未配置 key 或等待首次刷新' }
-    else if (!r.ok) {
-      big = r.unsupported ? '—' : '!'
-      sub = r.error ? ('请求失败：' + r.error)
-        : r.status ? ('HTTP ' + r.status + (r.parse ? ' · 字段未命中' : ''))
-        : (r.note || '取数失败')
-    } else if (provider.kind === 'balance') {
-      big = money(r.remaining, r.currency)
-      sub = provider.name + ' · 余额'
-    } else if (provider.kind === 'quota') {
-      const w0 = r.windows && r.windows[0]
+    if (!res && state.busy) { big = '…'; sub = '取数中' }
+    else if (!res) { big = '—'; sub = '未配置 key 或等待首次刷新' }
+    else if (pr && pr.unconfigured) { big = '—'; sub = pr.note || '未配置 key' }
+    else if (pr && !pr.ok) {
+      big = pr.unsupported ? '—' : '!'
+      sub = pr.error ? ('请求失败：' + pr.error)
+        : pr.status ? ('HTTP ' + pr.status + (pr.parse ? ' · 字段未命中' : ''))
+        : (pr.note || '取数失败')
+    } else if (pSrc.kind === 'balance') {
+      big = money(pr.remaining, pr.currency)
+      sub = pSrc.label + ' · 余额'
+    } else if (pSrc.kind === 'quota') {
+      const w0 = pr.windows && pr.windows[0]
       big = w0 && w0.percent != null ? w0.percent.toFixed(1) + '%' : '—'
-      sub = provider.name + ' · ' + (w0 ? w0.label + '剩余' : '额度')
+      sub = pSrc.label + ' · ' + (w0 ? w0.label + '剩余' : '额度')
     } else {
       big = '✓'
       sub = 'key 可用 · 官方无余额接口'
     }
 
-    const rows = []
-    if (provider.kind === 'balance') {
-      const used = todayUsed(ctx, activePid)
-      rows.push(['今日已用', used != null ? money(used, provider.currency) : '—'])
-      if (r && r.ok && r.total != null) rows.push(['总额', money(r.total, r.currency)])
-      if (r && r.ok && r.remaining != null) rows.push(['余额', money(r.remaining, r.currency)])
-    } else if (provider.kind === 'quota' && r && r.ok && r.windows) {
-      for (const w of r.windows.slice(0, 3)) {
-        rows.push([w.label, w.percent != null ? w.percent.toFixed(1) + '%'
-          : (w.remain != null ? String(w.remain) : '—')])
+    /**
+     * 单源结果 → 行组。非主源的 headline 数值已由 v2 块展示，重复的
+     * 「余额 / 单窗口 / 探活状态」行跳过（今日已用、总额保留）。
+     */
+    function rowsOf(src, r, isPrimary) {
+      const rows = []
+      if (src.kind === 'balance') {
+        const idx = provider.sources.indexOf(src)
+        const used = todayUsed(ctx, obsKey(activePid, idx, src.id))
+        rows.push(['今日已用', used != null ? money(used, src.currency) : '—'])
+        if (r && r.ok && r.total != null) rows.push(['总额', money(r.total, r.currency)])
+        if (r && r.ok && r.remaining != null && isPrimary) rows.push(['余额', money(r.remaining, r.currency)])
+      } else if (src.kind === 'quota' && r && r.ok && r.windows) {
+        if (isPrimary || r.windows.length > 1) {
+          for (const w of r.windows.slice(0, 3)) {
+            rows.push([w.label, w.percent != null ? w.percent.toFixed(1) + '%'
+              : (w.remain != null ? String(w.remain) : '—')])
+          }
+        }
+      } else if (r && r.unconfigured) {
+        rows.push(['状态', '未配置 key'])
+      } else if (r && !r.ok) {
+        rows.push(['状态', r.error ? ('请求失败：' + r.error)
+          : r.status ? ('HTTP ' + r.status + (r.parse ? ' · 字段未命中' : ''))
+          : (r.note || '取数失败')])
+      } else if (src.kind === 'probe' && isPrimary) {
+        rows.push(['状态', '✓ key 可用'])
       }
+      return rows
     }
-    if (state.turnCost != null) rows.push(['每轮消耗', '$' + state.turnCost.toFixed(4)])
-
-    const alertOn = cfg.alertEnabled && cfg.alertThreshold > 0 &&
-      provider.kind === 'balance' && r && r.ok && r.remaining != null &&
-      r.remaining < cfg.alertThreshold
 
     pop.innerHTML = ''
     const head = document.createElement('div')
@@ -1012,39 +1208,98 @@ export function mountWidget(ctx, opts = {}) {
     nameEl.textContent = provider.name
     const badge = document.createElement('span')
     badge.className = 'hbw-p-badge'
-    badge.textContent = fieldTier(provider)
+    badge.textContent = tierBadges(srcs)
     head.appendChild(nameEl)
     head.appendChild(badge)
     pop.appendChild(head)
 
-    const bigEl = document.createElement('div')
-    bigEl.className = 'hbw-p-big'
-    bigEl.textContent = big
-    pop.appendChild(bigEl)
-    const subEl = document.createElement('div')
-    subEl.className = 'hbw-p-sub'
-    subEl.textContent = sub
-    pop.appendChild(subEl)
-
-    for (const kv of rows) {
-      const row = document.createElement('div')
-      row.className = 'hbw-p-row'
-      const k = document.createElement('span')
-      k.className = 'k'
-      k.textContent = kv[0]
-      const v = document.createElement('span')
-      v.className = 'v'
-      v.textContent = kv[1]
-      row.appendChild(k)
-      row.appendChild(v)
-      pop.appendChild(row)
+    const emitRows = (rows) => {
+      for (const kv of rows) {
+        const row = document.createElement('div')
+        row.className = 'hbw-p-row'
+        const k = document.createElement('span')
+        k.className = 'k'
+        k.textContent = kv[0]
+        const v = document.createElement('span')
+        v.className = 'v'
+        v.textContent = kv[1]
+        row.appendChild(k)
+        row.appendChild(v)
+        pop.appendChild(row)
+      }
     }
 
-    if (alertOn) {
-      const a = document.createElement('div')
-      a.className = 'hbw-p-alert'
-      a.textContent = '⚠ 余额低于预警阈值 ' + money(cfg.alertThreshold, provider.currency)
-      pop.appendChild(a)
+    if (!multi) {
+      // 单源：大数值 + 说明 + 行（老版观感不变）
+      const bigEl = document.createElement('div')
+      bigEl.className = 'hbw-p-big'
+      bigEl.textContent = big
+      pop.appendChild(bigEl)
+      const subEl = document.createElement('div')
+      subEl.className = 'hbw-p-sub'
+      subEl.textContent = sub
+      pop.appendChild(subEl)
+      emitRows(rowsOf(srcs[0], res && res[0] && res[0].result, true))
+    } else {
+      // 多源：每源一节（订阅 / 按量付费分开），主源节里放大数值
+      for (let i = 0; i < srcs.length; i++) {
+        const src = srcs[i]
+        const r = res && res[i] && res[i].result
+        const isPrimary = primary && primary.src === src
+
+        const sec = document.createElement('div')
+        sec.className = 'hbw-p-sec' + (i === 0 ? ' first' : '')
+        const sname = document.createElement('span')
+        sname.textContent = src.label
+        const stier = document.createElement('span')
+        stier.className = 'st'
+        stier.textContent = src.kind === 'balance' ? '按量付费' : src.kind === 'quota' ? '订阅' : '探活'
+        sec.appendChild(sname)
+        sec.appendChild(stier)
+        pop.appendChild(sec)
+
+        if (isPrimary) {
+          const bigEl = document.createElement('div')
+          bigEl.className = 'hbw-p-big'
+          bigEl.textContent = big
+          pop.appendChild(bigEl)
+          const subEl = document.createElement('div')
+          subEl.className = 'hbw-p-sub'
+          subEl.textContent = sub
+          pop.appendChild(subEl)
+        } else if (r && r.ok && src.kind === 'balance') {
+          const v = document.createElement('div')
+          v.className = 'hbw-p-v2'
+          v.textContent = money(r.remaining, r.currency)
+          pop.appendChild(v)
+        } else if (r && r.ok && src.kind === 'quota') {
+          const w0 = r.windows && r.windows[0]
+          const v = document.createElement('div')
+          v.className = 'hbw-p-v2'
+          v.textContent = w0 && w0.percent != null ? w0.percent.toFixed(1) + '%' : '—'
+          pop.appendChild(v)
+        } else if (r && r.ok && src.kind === 'probe') {
+          const v = document.createElement('div')
+          v.className = 'hbw-p-v2'
+          v.textContent = '✓'
+          pop.appendChild(v)
+        }
+        emitRows(rowsOf(src, r, isPrimary))
+      }
+    }
+
+    if (state.turnCost != null) emitRows([['每轮消耗', '$' + state.turnCost.toFixed(4)]])
+
+    // 阈值预警：逐真余额源展示（未达阈值的源不显示）
+    if (cfg.alertEnabled && cfg.alertThreshold > 0 && res) {
+      for (const { src, result: r } of res) {
+        if (src.kind !== 'balance' || !r || !r.ok || r.remaining == null) continue
+        if (r.remaining >= cfg.alertThreshold) continue
+        const a = document.createElement('div')
+        a.className = 'hbw-p-alert'
+        a.textContent = '⚠ ' + src.label + ' 低于预警阈值 ' + money(cfg.alertThreshold, r.currency)
+        pop.appendChild(a)
+      }
     }
 
     if (cfg.phrases) {
@@ -1059,7 +1314,8 @@ export function mountWidget(ctx, opts = {}) {
     foot.className = 'hbw-p-foot'
     const t = document.createElement('span')
     t.className = 'hbw-p-time'
-    t.textContent = r && r.ok ? new Date().toLocaleTimeString() : ''
+    const anyOk = state.results && state.results.some((x) => x.result && x.result.ok)
+    t.textContent = anyOk ? new Date().toLocaleTimeString() : ''
     const btn = document.createElement('button')
     btn.className = 'hbw-p-btn'
     btn.setAttribute('data-act', 'refresh')
@@ -1184,7 +1440,6 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 import { useState } from 'react'
 
 const ID = 'hermes-balance-widget'
-const KEY_PREFIX = 'key.'
 
 /** Phase 1 的取数结果只活在组件态里，不落 storage。 */
 let gCtx = null
@@ -1223,18 +1478,20 @@ function remountWidget() {
   })
 }
 
-function readKey(ctx, pid) {
-  return ctx ? String(ctx.storage.get(KEY_PREFIX + pid, '') || '') : ''
+/** 按源读写 key：srcKey(pid, idx, sid)——首源沿用 key.<pid>（老配置零迁移）。 */
+function readKey(ctx, pid, idx, sid) {
+  return ctx ? String(ctx.storage.get(srcKey(pid, idx, sid), '') || '') : ''
 }
-function writeKey(ctx, pid, value) {
+function writeKey(ctx, pid, idx, sid, value) {
   if (!ctx) return
   const v = String(value || '').trim()
-  if (v) ctx.storage.set(KEY_PREFIX + pid, v)
-  else ctx.storage.remove(KEY_PREFIX + pid)
+  const k = srcKey(pid, idx, sid)
+  if (v) ctx.storage.set(k, v)
+  else ctx.storage.remove(k)
 }
 
 const TIER_LABEL = {
-  balance: { text: '真余额', color: '#16a34a' },
+  balance: { text: '按量付费 · 真余额', color: '#16a34a' },
   quota: { text: '订阅额度', color: '#2563eb' },
   probe: { text: '探活·无余额接口', color: '#a16207' },
 }
@@ -1256,6 +1513,7 @@ const RESULT_STYLE = { fontSize: 12.5, lineHeight: 1.6, whiteSpace: 'pre-wrap', 
 
 function formatResult(tier, r) {
   if (!r) return ''
+  if (r.unconfigured) return '— 未配置 key' + (r.note ? '（' + r.note + '）' : '')
   if (r.unsupported) return '— ' + (r.note || '该模板不提供此取数')
   if (r.error) return '请求失败：' + r.error
   if (!r.ok) {
@@ -1278,46 +1536,65 @@ function formatResult(tier, r) {
   return '✓'
 }
 
-function ProviderRow({ pid }) {
-  const [key, setKeyState] = useState(() => readKey(gCtx, pid))
+/** 单个取数源的 key 输入 + 连通性测试（一个厂商可挂多源：订阅 / 按量分开）。 */
+function SourceRow({ pid, idx }) {
+  const p = PROVIDERS[pid]
+  const s = p.sources[idx]
+  const [key, setKeyState] = useState(() => readKey(gCtx, pid, idx, s.id))
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
 
-  const p = PROVIDERS[pid]
-  const tier = providerTier(p)
+  const tier = sourceTier(s)
   const badge = TIER_LABEL[tier]
 
   async function test() {
     if (!key.trim()) {
-      setResult({ unsupported: true, note: '先填写 ' + p.keyRef })
+      setResult({ unsupported: true, note: '先填写 ' + s.keyRef })
       return
     }
     haptic('tap')
     setBusy(true)
     setResult(null)
-    const r = await fetchProvider(p, key.trim())
+    const r = await fetchSource(s, key.trim())
     setResult(r)
     setBusy(false)
   }
 
+  return jsxs('div', {
+    style: { display: 'flex', flexDirection: 'column', gap: 7,
+             padding: '9px 0 0', borderTop: idx ? '1px dashed rgba(128,128,128,.28)' : 'none' },
+    children: [
+      jsxs('div', { style: HEAD_STYLE, children: [
+        jsx('strong', { style: { fontSize: 12.5 }, children: s.label }),
+        jsx('span', { style: { ...BADGE_STYLE, color: badge.color }, children: badge.text }),
+        jsx('span', { style: { fontSize: 11, opacity: 0.6 }, children: s.keyRef }),
+      ] }),
+      jsxs('div', { style: { display: 'flex', gap: 8 }, children: [
+        jsx(Input, {
+          value: key,
+          type: 'password',
+          placeholder: '输入 ' + s.keyRef,
+          style: { flex: 1, fontSize: 12.5 },
+          onChange: (e) => { setKeyState(e.target.value); writeKey(gCtx, pid, idx, s.id, e.target.value) },
+        }),
+        jsx(Button, { size: 'sm', disabled: busy, onClick: test, children: busy ? '测试中…' : '测试连通性' }),
+      ] }),
+      s.apiNote ? jsx('div', { style: { fontSize: 11.5, opacity: 0.65, lineHeight: 1.5 }, children: s.apiNote }) : null,
+      result ? jsx('div', { style: RESULT_STYLE, children: formatResult(tier, result) }) : null,
+    ],
+  })
+}
+
+/** 厂商卡：头部（名称 + 说明）+ 逐源行（订阅 / 按量付费分开成条）。 */
+function ProviderRow({ pid }) {
+  const p = PROVIDERS[pid]
   return jsxs('div', { style: ROW_STYLE, children: [
     jsxs('div', { style: HEAD_STYLE, children: [
       jsx('strong', { style: { fontSize: 13.5 }, children: p.name }),
-      jsx('span', { style: { ...BADGE_STYLE, color: badge.color }, children: badge.text }),
-      jsx('span', { style: { fontSize: 11, opacity: 0.6 }, children: p.keyRef }),
-    ] }),
-    jsxs('div', { style: { display: 'flex', gap: 8 }, children: [
-      jsx(Input, {
-        value: key,
-        type: 'password',
-        placeholder: '输入 ' + p.keyRef,
-        style: { flex: 1, fontSize: 12.5 },
-        onChange: (e) => { setKeyState(e.target.value); writeKey(gCtx, pid, e.target.value) },
-      }),
-      jsx(Button, { size: 'sm', disabled: busy, onClick: test, children: busy ? '测试中…' : '测试连通性' }),
+      jsx('span', { style: { fontSize: 11, opacity: 0.6 }, children: p.sources.length + ' 个取数源' }),
     ] }),
     p.apiNote ? jsx('div', { style: { fontSize: 11.5, opacity: 0.65, lineHeight: 1.5 }, children: p.apiNote }) : null,
-    result ? jsx('div', { style: RESULT_STYLE, children: formatResult(tier, result) }) : null,
+    ...p.sources.map((s, i) => jsx(SourceRow, { pid, idx: i }, s.id)),
   ] })
 }
 

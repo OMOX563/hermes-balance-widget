@@ -254,6 +254,20 @@ const CSS = `
 }
 #${POP_ID} .hbw-p-btn:hover { filter: brightness(1.06); }
 #${POP_ID} .hbw-p-time { font-size: 10.5px; opacity: .5; font-variant-numeric: tabular-nums; }
+/* 多源分节：每个取数源一节（订阅 / 按量付费分开成条） */
+#${POP_ID} .hbw-p-sec {
+  display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  font-size: 11px; font-weight: 650; letter-spacing: .02em;
+  margin-top: 9px; padding-top: 8px;
+  border-top: 1px solid rgba(128,128,128,.22);
+}
+#${POP_ID} .hbw-p-sec.first { margin-top: 4px; padding-top: 0; border-top: none; }
+#${POP_ID}[data-theme="light"] .hbw-p-sec { border-top-color: rgba(0,0,0,.08); }
+#${POP_ID} .hbw-p-sec .st { font-size: 10px; font-weight: 600; opacity: .62; }
+#${POP_ID} .hbw-p-v2 {
+  font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums;
+  letter-spacing: .01em; margin-top: 2px;
+}
 
 /* 漫画对话气泡尖角：指向角色头部（--hbw-tail-x 由 JS 按角色中心计算） */
 #${POP_ID}::after, #${POP_ID}::before {
@@ -372,10 +386,14 @@ function todayUsed(ctx, pid) {
   return obs.used
 }
 
-function fieldTier(provider) {
-  if (provider.kind === 'balance') return '真余额'
-  if (provider.kind === 'quota') return '订阅额度'
-  return '探活 · 无余额接口'
+/** 头部徽标：聚合该厂商全部源的层级（如「真余额 + 订阅」）；纯探活 → 探活。 */
+function tierBadges(sources) {
+  const t = []
+  for (const s of sources || []) {
+    const label = s.kind === 'balance' ? '真余额' : s.kind === 'quota' ? '订阅' : null
+    if (label && !t.includes(label)) t.push(label)
+  }
+  return t.length ? t.join(' + ') : '探活 · 无余额接口'
 }
 
 export function mountWidget(ctx, opts = {}) {
@@ -404,11 +422,12 @@ export function mountWidget(ctx, opts = {}) {
   }
 
   const state = {
-    result: null, busy: false, unmounted: false,
+    /** [{ src, result }]，顺序与 provider.sources 一致；null = 尚未首查。 */
+    results: null, busy: false, unmounted: false,
     turnCost: null, costAtBusyStart: null,
     phraseIdx: Math.floor(Math.random() * phrasePool().length),
     popEl: null, phraseTimer: null,
-    alerted: false, unsubs: [], timer: null,
+    alerted: {}, unsubs: [], timer: null,
   }
 
   /* ── 根（角色贴纸）───────────────────────────────────────────────────── */
@@ -509,8 +528,8 @@ export function mountWidget(ctx, opts = {}) {
     char.alt = provider.name
     char.src = (typeof MASCOTS !== 'undefined' && MASCOTS[pid]) || ''
     char.style.clipPath = hitClip(pid)
-    state.result = null
-    state.alerted = false
+    state.results = null
+    state.alerted = {}
     state.turnCost = null
     state.costAtBusyStart = null
     state.phraseIdx = Math.floor(Math.random() * phrasePool().length)
@@ -519,57 +538,66 @@ export function mountWidget(ctx, opts = {}) {
     return true
   }
 
-  /* ── 取数 ────────────────────────────────────────────────────────────── */
+  /* ── 取数（多源：每源独立读 key，缺 key 的源记 unconfigured）─────────── */
   async function refresh() {
     if (state.busy) return
     const pidAtStart = activePid
     const provAtStart = provider
-    const key = ctx ? String(ctx.storage.get('key.' + pidAtStart, '') || '') : ''
-    if (!key) {
-      state.result = null
+    const hasAnyKey = (provAtStart.sources || []).some((s, i) =>
+      ctx && String(ctx.storage.get(srcKey(pidAtStart, i, s.id), '') || '').trim())
+    if (!hasAnyKey) {
+      state.results = (provAtStart.sources || []).map((src) => ({
+        src, result: { ok: false, unconfigured: true, note: src.apiNote || '未配置 key' },
+      }))
       state.busy = false
       if (!state.unmounted) renderPop()
       return
     }
     state.busy = true
     renderPop()
-    let r
+    let res
     try {
-      r = await (typeof fetchProvider !== 'undefined'
-        ? fetchProvider(provAtStart, key)
+      res = await (typeof fetchAll !== 'undefined'
+        ? fetchAll(provAtStart, (src, i) =>
+            ctx ? String(ctx.storage.get(srcKey(pidAtStart, i, src.id), '') || '').trim() : '')
         : Promise.reject(new Error('executor missing')))
     } catch (err) {
-      r = { ok: false, error: String(err && err.message || err) }
+      res = (provAtStart.sources || []).map((src) => ({
+        src, result: { ok: false, error: String(err && err.message || err) },
+      }))
     }
     state.busy = false
     if (state.unmounted) return
     // 换装竞态：取数途中角色已切 → 丢弃过期结果并用新角色重跑
     if (pidAtStart !== activePid) { refresh(); return }
-    state.result = r
-    afterRefresh(r)
+    state.results = res
+    afterRefresh(res)
     renderPop()
   }
 
-  function afterRefresh(r) {
-    if (!r || !r.ok) return
-    if (provider.kind === 'balance' && r.remaining != null) {
-      observeDrop(ctx, activePid, r.remaining)
-      if (cfg.alertEnabled && cfg.alertThreshold > 0) {
-        if (r.remaining < cfg.alertThreshold) {
-          if (!state.alerted) {
-            state.alerted = true
-            try {
-              if (typeof host !== 'undefined') host.notify({
-                kind: 'warning',
-                message: provider.name + ' 余额预警：' + money(r.remaining, r.currency) +
-                         ' 低于阈值 ' + money(cfg.alertThreshold, r.currency),
-              })
-            } catch (e) { /* noop */ }
-            if (cfg.sfx) sfx.warn(cfg.sfxVolume)
-          }
-        } else {
-          state.alerted = false
+  /** 逐源后处理：真余额源做今日已用观测与阈值预警（按源独立记账防串扰）。 */
+  function afterRefresh(res) {
+    if (!Array.isArray(res)) return
+    for (const { src, result: r } of res) {
+      if (!r || !r.ok || src.kind !== 'balance' || r.remaining == null) continue
+      const idx = provider.sources.indexOf(src)
+      observeDrop(ctx, obsKey(activePid, idx, src.id), r.remaining)
+      if (!cfg.alertEnabled || !(cfg.alertThreshold > 0)) continue
+      const aid = activePid + '.' + src.id
+      if (r.remaining < cfg.alertThreshold) {
+        if (!state.alerted[aid]) {
+          state.alerted[aid] = true
+          try {
+            if (typeof host !== 'undefined') host.notify({
+              kind: 'warning',
+              message: provider.name + ' ' + src.label + ' 余额预警：' + money(r.remaining, r.currency) +
+                       ' 低于阈值 ' + money(cfg.alertThreshold, r.currency),
+            })
+          } catch (e) { /* noop */ }
+          if (cfg.sfx) sfx.warn(cfg.sfxVolume)
         }
+      } else {
+        state.alerted[aid] = false
       }
     }
   }
@@ -638,46 +666,71 @@ export function mountWidget(ctx, opts = {}) {
   function renderPop() {
     const pop = state.popEl
     if (!pop || state.unmounted) return
-    const r = state.result
+    const srcs = provider.sources || []
+    const res = state.results
+    const multi = srcs.length > 1
+
+    // 主展示源：第一个取数成功的；退而求其次第一个已配置的；再退第一个源
+    let primary = res && (res.find((x) => x.result && x.result.ok && !x.result.probeOnly)
+      || res.find((x) => x.result && x.result.ok)
+      || res.find((x) => x.result && !x.result.unconfigured)
+      || res[0])
+
+    const pSrc = primary && primary.src
+    const pr = primary && primary.result
 
     let big = '…'
     let sub = ''
-    if (!r && state.busy) { big = '…'; sub = '取数中' }
-    else if (!r) { big = '—'; sub = '未配置 key 或等待首次刷新' }
-    else if (!r.ok) {
-      big = r.unsupported ? '—' : '!'
-      sub = r.error ? ('请求失败：' + r.error)
-        : r.status ? ('HTTP ' + r.status + (r.parse ? ' · 字段未命中' : ''))
-        : (r.note || '取数失败')
-    } else if (provider.kind === 'balance') {
-      big = money(r.remaining, r.currency)
-      sub = provider.name + ' · 余额'
-    } else if (provider.kind === 'quota') {
-      const w0 = r.windows && r.windows[0]
+    if (!res && state.busy) { big = '…'; sub = '取数中' }
+    else if (!res) { big = '—'; sub = '未配置 key 或等待首次刷新' }
+    else if (pr && pr.unconfigured) { big = '—'; sub = pr.note || '未配置 key' }
+    else if (pr && !pr.ok) {
+      big = pr.unsupported ? '—' : '!'
+      sub = pr.error ? ('请求失败：' + pr.error)
+        : pr.status ? ('HTTP ' + pr.status + (pr.parse ? ' · 字段未命中' : ''))
+        : (pr.note || '取数失败')
+    } else if (pSrc.kind === 'balance') {
+      big = money(pr.remaining, pr.currency)
+      sub = pSrc.label + ' · 余额'
+    } else if (pSrc.kind === 'quota') {
+      const w0 = pr.windows && pr.windows[0]
       big = w0 && w0.percent != null ? w0.percent.toFixed(1) + '%' : '—'
-      sub = provider.name + ' · ' + (w0 ? w0.label + '剩余' : '额度')
+      sub = pSrc.label + ' · ' + (w0 ? w0.label + '剩余' : '额度')
     } else {
       big = '✓'
       sub = 'key 可用 · 官方无余额接口'
     }
 
-    const rows = []
-    if (provider.kind === 'balance') {
-      const used = todayUsed(ctx, activePid)
-      rows.push(['今日已用', used != null ? money(used, provider.currency) : '—'])
-      if (r && r.ok && r.total != null) rows.push(['总额', money(r.total, r.currency)])
-      if (r && r.ok && r.remaining != null) rows.push(['余额', money(r.remaining, r.currency)])
-    } else if (provider.kind === 'quota' && r && r.ok && r.windows) {
-      for (const w of r.windows.slice(0, 3)) {
-        rows.push([w.label, w.percent != null ? w.percent.toFixed(1) + '%'
-          : (w.remain != null ? String(w.remain) : '—')])
+    /**
+     * 单源结果 → 行组。非主源的 headline 数值已由 v2 块展示，重复的
+     * 「余额 / 单窗口 / 探活状态」行跳过（今日已用、总额保留）。
+     */
+    function rowsOf(src, r, isPrimary) {
+      const rows = []
+      if (src.kind === 'balance') {
+        const idx = provider.sources.indexOf(src)
+        const used = todayUsed(ctx, obsKey(activePid, idx, src.id))
+        rows.push(['今日已用', used != null ? money(used, src.currency) : '—'])
+        if (r && r.ok && r.total != null) rows.push(['总额', money(r.total, r.currency)])
+        if (r && r.ok && r.remaining != null && isPrimary) rows.push(['余额', money(r.remaining, r.currency)])
+      } else if (src.kind === 'quota' && r && r.ok && r.windows) {
+        if (isPrimary || r.windows.length > 1) {
+          for (const w of r.windows.slice(0, 3)) {
+            rows.push([w.label, w.percent != null ? w.percent.toFixed(1) + '%'
+              : (w.remain != null ? String(w.remain) : '—')])
+          }
+        }
+      } else if (r && r.unconfigured) {
+        rows.push(['状态', '未配置 key'])
+      } else if (r && !r.ok) {
+        rows.push(['状态', r.error ? ('请求失败：' + r.error)
+          : r.status ? ('HTTP ' + r.status + (r.parse ? ' · 字段未命中' : ''))
+          : (r.note || '取数失败')])
+      } else if (src.kind === 'probe' && isPrimary) {
+        rows.push(['状态', '✓ key 可用'])
       }
+      return rows
     }
-    if (state.turnCost != null) rows.push(['每轮消耗', '$' + state.turnCost.toFixed(4)])
-
-    const alertOn = cfg.alertEnabled && cfg.alertThreshold > 0 &&
-      provider.kind === 'balance' && r && r.ok && r.remaining != null &&
-      r.remaining < cfg.alertThreshold
 
     pop.innerHTML = ''
     const head = document.createElement('div')
@@ -687,39 +740,98 @@ export function mountWidget(ctx, opts = {}) {
     nameEl.textContent = provider.name
     const badge = document.createElement('span')
     badge.className = 'hbw-p-badge'
-    badge.textContent = fieldTier(provider)
+    badge.textContent = tierBadges(srcs)
     head.appendChild(nameEl)
     head.appendChild(badge)
     pop.appendChild(head)
 
-    const bigEl = document.createElement('div')
-    bigEl.className = 'hbw-p-big'
-    bigEl.textContent = big
-    pop.appendChild(bigEl)
-    const subEl = document.createElement('div')
-    subEl.className = 'hbw-p-sub'
-    subEl.textContent = sub
-    pop.appendChild(subEl)
-
-    for (const kv of rows) {
-      const row = document.createElement('div')
-      row.className = 'hbw-p-row'
-      const k = document.createElement('span')
-      k.className = 'k'
-      k.textContent = kv[0]
-      const v = document.createElement('span')
-      v.className = 'v'
-      v.textContent = kv[1]
-      row.appendChild(k)
-      row.appendChild(v)
-      pop.appendChild(row)
+    const emitRows = (rows) => {
+      for (const kv of rows) {
+        const row = document.createElement('div')
+        row.className = 'hbw-p-row'
+        const k = document.createElement('span')
+        k.className = 'k'
+        k.textContent = kv[0]
+        const v = document.createElement('span')
+        v.className = 'v'
+        v.textContent = kv[1]
+        row.appendChild(k)
+        row.appendChild(v)
+        pop.appendChild(row)
+      }
     }
 
-    if (alertOn) {
-      const a = document.createElement('div')
-      a.className = 'hbw-p-alert'
-      a.textContent = '⚠ 余额低于预警阈值 ' + money(cfg.alertThreshold, provider.currency)
-      pop.appendChild(a)
+    if (!multi) {
+      // 单源：大数值 + 说明 + 行（老版观感不变）
+      const bigEl = document.createElement('div')
+      bigEl.className = 'hbw-p-big'
+      bigEl.textContent = big
+      pop.appendChild(bigEl)
+      const subEl = document.createElement('div')
+      subEl.className = 'hbw-p-sub'
+      subEl.textContent = sub
+      pop.appendChild(subEl)
+      emitRows(rowsOf(srcs[0], res && res[0] && res[0].result, true))
+    } else {
+      // 多源：每源一节（订阅 / 按量付费分开），主源节里放大数值
+      for (let i = 0; i < srcs.length; i++) {
+        const src = srcs[i]
+        const r = res && res[i] && res[i].result
+        const isPrimary = primary && primary.src === src
+
+        const sec = document.createElement('div')
+        sec.className = 'hbw-p-sec' + (i === 0 ? ' first' : '')
+        const sname = document.createElement('span')
+        sname.textContent = src.label
+        const stier = document.createElement('span')
+        stier.className = 'st'
+        stier.textContent = src.kind === 'balance' ? '按量付费' : src.kind === 'quota' ? '订阅' : '探活'
+        sec.appendChild(sname)
+        sec.appendChild(stier)
+        pop.appendChild(sec)
+
+        if (isPrimary) {
+          const bigEl = document.createElement('div')
+          bigEl.className = 'hbw-p-big'
+          bigEl.textContent = big
+          pop.appendChild(bigEl)
+          const subEl = document.createElement('div')
+          subEl.className = 'hbw-p-sub'
+          subEl.textContent = sub
+          pop.appendChild(subEl)
+        } else if (r && r.ok && src.kind === 'balance') {
+          const v = document.createElement('div')
+          v.className = 'hbw-p-v2'
+          v.textContent = money(r.remaining, r.currency)
+          pop.appendChild(v)
+        } else if (r && r.ok && src.kind === 'quota') {
+          const w0 = r.windows && r.windows[0]
+          const v = document.createElement('div')
+          v.className = 'hbw-p-v2'
+          v.textContent = w0 && w0.percent != null ? w0.percent.toFixed(1) + '%' : '—'
+          pop.appendChild(v)
+        } else if (r && r.ok && src.kind === 'probe') {
+          const v = document.createElement('div')
+          v.className = 'hbw-p-v2'
+          v.textContent = '✓'
+          pop.appendChild(v)
+        }
+        emitRows(rowsOf(src, r, isPrimary))
+      }
+    }
+
+    if (state.turnCost != null) emitRows([['每轮消耗', '$' + state.turnCost.toFixed(4)]])
+
+    // 阈值预警：逐真余额源展示（未达阈值的源不显示）
+    if (cfg.alertEnabled && cfg.alertThreshold > 0 && res) {
+      for (const { src, result: r } of res) {
+        if (src.kind !== 'balance' || !r || !r.ok || r.remaining == null) continue
+        if (r.remaining >= cfg.alertThreshold) continue
+        const a = document.createElement('div')
+        a.className = 'hbw-p-alert'
+        a.textContent = '⚠ ' + src.label + ' 低于预警阈值 ' + money(cfg.alertThreshold, r.currency)
+        pop.appendChild(a)
+      }
     }
 
     if (cfg.phrases) {
@@ -734,7 +846,8 @@ export function mountWidget(ctx, opts = {}) {
     foot.className = 'hbw-p-foot'
     const t = document.createElement('span')
     t.className = 'hbw-p-time'
-    t.textContent = r && r.ok ? new Date().toLocaleTimeString() : ''
+    const anyOk = state.results && state.results.some((x) => x.result && x.result.ok)
+    t.textContent = anyOk ? new Date().toLocaleTimeString() : ''
     const btn = document.createElement('button')
     btn.className = 'hbw-p-btn'
     btn.setAttribute('data-act', 'refresh')

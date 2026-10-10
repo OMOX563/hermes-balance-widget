@@ -21,12 +21,11 @@ import {
 } from '@hermes/plugin-sdk'
 import { jsx, jsxs } from 'react/jsx-runtime'
 import { useState } from 'react'
-import { PROVIDERS, PROVIDER_ORDER, providerTier } from './providers.js'
+import { PROVIDERS, PROVIDER_ORDER, sourceTier, srcKey } from './providers.js'
 import { mountWidget, unmountWidget } from './widget.js'
-import { fetchProvider } from './balance.js'
+import { fetchSource } from './balance.js'
 
 const ID = 'hermes-balance-widget'
-const KEY_PREFIX = 'key.'
 
 /** Phase 1 的取数结果只活在组件态里，不落 storage。 */
 let gCtx = null
@@ -65,18 +64,20 @@ function remountWidget() {
   })
 }
 
-function readKey(ctx, pid) {
-  return ctx ? String(ctx.storage.get(KEY_PREFIX + pid, '') || '') : ''
+/** 按源读写 key：srcKey(pid, idx, sid)——首源沿用 key.<pid>（老配置零迁移）。 */
+function readKey(ctx, pid, idx, sid) {
+  return ctx ? String(ctx.storage.get(srcKey(pid, idx, sid), '') || '') : ''
 }
-function writeKey(ctx, pid, value) {
+function writeKey(ctx, pid, idx, sid, value) {
   if (!ctx) return
   const v = String(value || '').trim()
-  if (v) ctx.storage.set(KEY_PREFIX + pid, v)
-  else ctx.storage.remove(KEY_PREFIX + pid)
+  const k = srcKey(pid, idx, sid)
+  if (v) ctx.storage.set(k, v)
+  else ctx.storage.remove(k)
 }
 
 const TIER_LABEL = {
-  balance: { text: '真余额', color: '#16a34a' },
+  balance: { text: '按量付费 · 真余额', color: '#16a34a' },
   quota: { text: '订阅额度', color: '#2563eb' },
   probe: { text: '探活·无余额接口', color: '#a16207' },
 }
@@ -98,6 +99,7 @@ const RESULT_STYLE = { fontSize: 12.5, lineHeight: 1.6, whiteSpace: 'pre-wrap', 
 
 function formatResult(tier, r) {
   if (!r) return ''
+  if (r.unconfigured) return '— 未配置 key' + (r.note ? '（' + r.note + '）' : '')
   if (r.unsupported) return '— ' + (r.note || '该模板不提供此取数')
   if (r.error) return '请求失败：' + r.error
   if (!r.ok) {
@@ -120,46 +122,65 @@ function formatResult(tier, r) {
   return '✓'
 }
 
-function ProviderRow({ pid }) {
-  const [key, setKeyState] = useState(() => readKey(gCtx, pid))
+/** 单个取数源的 key 输入 + 连通性测试（一个厂商可挂多源：订阅 / 按量分开）。 */
+function SourceRow({ pid, idx }) {
+  const p = PROVIDERS[pid]
+  const s = p.sources[idx]
+  const [key, setKeyState] = useState(() => readKey(gCtx, pid, idx, s.id))
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
 
-  const p = PROVIDERS[pid]
-  const tier = providerTier(p)
+  const tier = sourceTier(s)
   const badge = TIER_LABEL[tier]
 
   async function test() {
     if (!key.trim()) {
-      setResult({ unsupported: true, note: '先填写 ' + p.keyRef })
+      setResult({ unsupported: true, note: '先填写 ' + s.keyRef })
       return
     }
     haptic('tap')
     setBusy(true)
     setResult(null)
-    const r = await fetchProvider(p, key.trim())
+    const r = await fetchSource(s, key.trim())
     setResult(r)
     setBusy(false)
   }
 
+  return jsxs('div', {
+    style: { display: 'flex', flexDirection: 'column', gap: 7,
+             padding: '9px 0 0', borderTop: idx ? '1px dashed rgba(128,128,128,.28)' : 'none' },
+    children: [
+      jsxs('div', { style: HEAD_STYLE, children: [
+        jsx('strong', { style: { fontSize: 12.5 }, children: s.label }),
+        jsx('span', { style: { ...BADGE_STYLE, color: badge.color }, children: badge.text }),
+        jsx('span', { style: { fontSize: 11, opacity: 0.6 }, children: s.keyRef }),
+      ] }),
+      jsxs('div', { style: { display: 'flex', gap: 8 }, children: [
+        jsx(Input, {
+          value: key,
+          type: 'password',
+          placeholder: '输入 ' + s.keyRef,
+          style: { flex: 1, fontSize: 12.5 },
+          onChange: (e) => { setKeyState(e.target.value); writeKey(gCtx, pid, idx, s.id, e.target.value) },
+        }),
+        jsx(Button, { size: 'sm', disabled: busy, onClick: test, children: busy ? '测试中…' : '测试连通性' }),
+      ] }),
+      s.apiNote ? jsx('div', { style: { fontSize: 11.5, opacity: 0.65, lineHeight: 1.5 }, children: s.apiNote }) : null,
+      result ? jsx('div', { style: RESULT_STYLE, children: formatResult(tier, result) }) : null,
+    ],
+  })
+}
+
+/** 厂商卡：头部（名称 + 说明）+ 逐源行（订阅 / 按量付费分开成条）。 */
+function ProviderRow({ pid }) {
+  const p = PROVIDERS[pid]
   return jsxs('div', { style: ROW_STYLE, children: [
     jsxs('div', { style: HEAD_STYLE, children: [
       jsx('strong', { style: { fontSize: 13.5 }, children: p.name }),
-      jsx('span', { style: { ...BADGE_STYLE, color: badge.color }, children: badge.text }),
-      jsx('span', { style: { fontSize: 11, opacity: 0.6 }, children: p.keyRef }),
-    ] }),
-    jsxs('div', { style: { display: 'flex', gap: 8 }, children: [
-      jsx(Input, {
-        value: key,
-        type: 'password',
-        placeholder: '输入 ' + p.keyRef,
-        style: { flex: 1, fontSize: 12.5 },
-        onChange: (e) => { setKeyState(e.target.value); writeKey(gCtx, pid, e.target.value) },
-      }),
-      jsx(Button, { size: 'sm', disabled: busy, onClick: test, children: busy ? '测试中…' : '测试连通性' }),
+      jsx('span', { style: { fontSize: 11, opacity: 0.6 }, children: p.sources.length + ' 个取数源' }),
     ] }),
     p.apiNote ? jsx('div', { style: { fontSize: 11.5, opacity: 0.65, lineHeight: 1.5 }, children: p.apiNote }) : null,
-    result ? jsx('div', { style: RESULT_STYLE, children: formatResult(tier, result) }) : null,
+    ...p.sources.map((s, i) => jsx(SourceRow, { pid, idx: i }, s.id)),
   ] })
 }
 

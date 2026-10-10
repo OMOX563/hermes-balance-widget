@@ -42,33 +42,57 @@ fs.writeFileSync(tmp, src, 'utf8')
 try {
   const mod = await import('file:///' + tmp.replace(/\\/g, '/'))
 
-  /* ── ① 九家模板 ─────────────────────────────────────────────────────── */
+  /* ── ① 九家模板（多源：订阅与按量付费分开成条）─────────────────────── */
   const expected = ['deepseek', 'minimax', 'glm', 'kimi', 'mimo', 'chatgpt', 'claude', 'gemini', 'grok']
   assert.deepEqual(Object.keys(mod.PROVIDERS).sort(), [...expected].sort(), '9 provider ids')
   assert.deepEqual(mod.PROVIDER_ORDER, expected, 'display order')
+  const allSources = []
   for (const id of expected) {
     const p = mod.PROVIDERS[id]
-    assert.ok(p.name && p.currency && p.keyRef, id + ' basic fields')
-    assert.ok(p.kind === 'balance' || p.kind === 'quota' || p.noBalanceApi, id + ' tier')
-    if (p.kind === 'balance') assert.ok(p.balance.url.startsWith('https://'), id + ' balance url')
-    if (p.kind === 'quota') {
-      assert.ok(p.quota && p.quota.url.startsWith('https://'), id + ' quota url')
-      assert.ok(p.probeUrl, id + ' quota probeUrl')
-    }
-    if (p.noBalanceApi) {
-      assert.ok(p.apiNote, id + ' apiNote')
-      assert.ok(p.balance && p.balance.url === '', id + ' probe tier keeps empty balance url')
+    assert.ok(p.name && Array.isArray(p.sources) && p.sources.length >= 1, id + ' has sources[]')
+    const sids = p.sources.map((s) => s.id)
+    assert.equal(new Set(sids).size, sids.length, id + ' source ids unique')
+    for (const s of p.sources) {
+      assert.ok(s.id && s.label && s.keyRef, id + '/' + s.id + ' basic fields')
+      assert.ok(['balance', 'quota', 'probe'].includes(s.kind), id + '/' + s.id + ' kind')
+      assert.ok(s.currency === 'CNY' || s.currency === 'USD', id + '/' + s.id + ' currency')
+      if (s.kind === 'balance') assert.ok(s.balance && s.balance.url.startsWith('https://'), id + '/' + s.id + ' balance url')
+      if (s.kind === 'quota') assert.ok(s.quota && s.quota.url.startsWith('https://'), id + '/' + s.id + ' quota url')
+      if (s.kind === 'probe') assert.ok(s.probeUrl && s.probeUrl.startsWith('https://'), id + '/' + s.id + ' probe url')
+      allSources.push({ pid: id, ...s })
     }
   }
-  // 层级分布：2 真余额 + 2 订阅额度 + 5 探活（真接口共 4 家）
-  const tiers = expected.map((id) => mod.providerTier(mod.PROVIDERS[id])).sort()
-  assert.deepEqual(tiers, ['balance', 'balance', 'quota', 'quota', 'probe', 'probe', 'probe', 'probe', 'probe'].sort(),
-    'tier distribution 2/2/5')
+  // 层级分布（13 源）：3 按量付费 + 5 订阅 + 5 探活
+  const tiers = allSources.map((s) => mod.sourceTier(s)).sort()
+  assert.deepEqual(tiers,
+    ['balance', 'balance', 'balance',
+     'quota', 'quota', 'quota', 'quota', 'quota',
+     'probe', 'probe', 'probe', 'probe', 'probe'].sort(),
+    'tier distribution 3/5/5 across 13 sources')
+  // 订阅与按量付费必须分开：kimi 同时有 balance 与 quota 源
+  const kimi = mod.PROVIDERS.kimi
+  assert.ok(kimi.sources.some((s) => s.kind === 'balance'), 'kimi has payg source')
+  assert.ok(kimi.sources.some((s) => s.kind === 'quota'), 'kimi has subscription source')
+  assert.equal(kimi.sources.length, 3, 'kimi 3 sources (payg CN / coding / payg intl)')
+  // 国际站独立源（key 分开）
+  assert.equal(mod.PROVIDERS.minimax.sources.length, 2, 'minimax CN + intl')
+  assert.equal(mod.PROVIDERS.glm.sources.length, 2, 'glm CN + intl')
   // 真接口关键 URL 不被写错
-  assert.equal(mod.PROVIDERS.deepseek.balance.url, 'https://api.deepseek.com/user/balance')
-  assert.equal(mod.PROVIDERS.minimax.quota.url, 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains')
-  assert.equal(mod.PROVIDERS.kimi.balance.url, 'https://api.moonshot.cn/v1/users/me/balance')
-  assert.equal(mod.PROVIDERS.mimo.probeUrl, 'https://token-plan-cn.xiaomimimo.com/v1/models')
+  assert.equal(mod.PROVIDERS.deepseek.sources[0].balance.url, 'https://api.deepseek.com/user/balance')
+  assert.equal(mod.PROVIDERS.minimax.sources[0].quota.url, 'https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains')
+  assert.equal(mod.PROVIDERS.minimax.sources[1].quota.url, 'https://api.minimax.io/v1/api/openplatform/coding_plan/remains')
+  assert.equal(mod.PROVIDERS.kimi.sources[1].quota.url, 'https://api.kimi.com/coding/v1/usages')
+  assert.equal(mod.PROVIDERS.kimi.sources[2].balance.url, 'https://api.moonshot.ai/v1/users/me/balance')
+  assert.equal(mod.PROVIDERS.glm.sources[1].quota.url, 'https://api.z.ai/api/monitor/usage/quota/limit')
+  assert.equal(mod.PROVIDERS.mimo.sources[0].probeUrl, 'https://token-plan-cn.xiaomimimo.com/v1/models')
+  // Claude 探活双请求头（x-api-key + anthropic-version）
+  assert.deepEqual(mod.PROVIDERS.claude.sources[0].headers,
+    { 'x-api-key': '{key}', 'anthropic-version': '2023-06-01' }, 'claude probe dual headers')
+  // 存储 key 约定：首源沿用 key.<pid>（老配置零迁移），其余带源 id；obs 同构
+  assert.equal(mod.srcKey('kimi', 0, 'payg_cn'), 'key.kimi', 'idx0 keeps legacy key')
+  assert.equal(mod.srcKey('kimi', 1, 'coding'), 'key.kimi.coding', 'idx>0 suffix')
+  assert.equal(mod.obsKey('kimi', 0, 'payg_cn'), 'obs.kimi', 'obs idx0 legacy')
+  assert.equal(mod.obsKey('kimi', 2, 'payg_intl'), 'obs.kimi.payg_intl', 'obs idx>0 suffix')
 
   /* ── ② 执行器纯函数 ─────────────────────────────────────────────────── */
   const sample = { data: { available_balance: 42.5, limits: [
@@ -82,18 +106,22 @@ try {
   assert.deepEqual(mod.buildHeaders('Bearer {key}', 'sk-test'), { Authorization: 'Bearer sk-test' }, 'bearer tpl')
   assert.deepEqual(mod.buildHeaders('{key}', 'rawkey'), { Authorization: 'rawkey' }, 'bare tpl (zhipu style)')
   assert.deepEqual(mod.buildHeaders('', 'k'), {}, 'empty auth → {}')
+  // headers 表（Claude 探活双头）：值内 {key} 占位替换
+  assert.deepEqual(mod.buildHeaders(undefined, 'sk-ant-x', { 'x-api-key': '{key}', 'anthropic-version': '2023-06-01' }),
+    { 'x-api-key': 'sk-ant-x', 'anthropic-version': '2023-06-01' }, 'extra headers tpl')
 
-  /* ── ③ 三态取数（mock fetch）────────────────────────────────────────── */
+  /* ── ③ 三态取数（mock fetch，按源）──────────────────────────────────── */
   const mock = (body, ok = true, status = 200) => async () => ({ ok, status, json: async () => body })
+  const sr = (pid, i) => mod.PROVIDERS[pid].sources[i || 0]
 
-  // balance：deepseek 真余额
-  const r1 = await mod.fetchBalance(mod.PROVIDERS.deepseek, 'k', mock({
+  // balance：deepseek 按量付费真余额
+  const r1 = await mod.fetchBalance(sr('deepseek'), 'k', mock({
     balance_infos: [{ total_balance: 12.3456 }],
   }))
   assert.ok(r1.ok && r1.remaining === 12.3456 && r1.currency === 'CNY', 'deepseek balance parse')
 
   // quota：minimax 简单字段
-  const r2 = await mod.fetchQuota(mod.PROVIDERS.minimax, 'k', mock({
+  const r2 = await mod.fetchQuota(sr('minimax'), 'k', mock({
     model_remains: [{ current_interval_remaining_percent: 87.5,
                       current_weekly_remaining_percent: 40.2, end_time: 1791476218840 }],
   }))
@@ -102,29 +130,56 @@ try {
   assert.equal(r2.windows[1].label, '周', 'weekly label')
 
   // quota：智谱 windows + pick（list/types/unit 过滤）
-  const r3 = await mod.fetchQuota(mod.PROVIDERS.glm, 'k', mock(sample))
+  const r3 = await mod.fetchQuota(sr('glm'), 'k', mock(sample))
   assert.ok(r3.ok && r3.windows.length === 2, 'zhipu picked windows')
   assert.equal(r3.windows[0].percent, 63.2, 'unit=3 picked (not [0])')
   assert.equal(r3.windows[1].percent, 12.8, 'unit=6 weekly')
   assert.equal(r3.windows[0].resetAt, 1791476218840, 'resetAt passthrough')
 
+  // quota：Kimi Coding 订阅（usage.remaining/limit → 百分比窗口）
+  const rkc = await mod.fetchQuota(sr('kimi', 1), 'k', mock({
+    usage: { remaining: 63, limit: 100, resetTime: 1791476218840 },
+  }))
+  assert.ok(rkc.ok && rkc.windows.length === 1, 'kimi coding window')
+  assert.equal(rkc.windows[0].percent, 63, 'kimi coding pct = remain/total*100')
+  assert.equal(rkc.windows[0].resetAt, 1791476218840, 'kimi coding resetAt')
+
   // probe：openai 探活 401 → not ok
-  const r4 = await mod.probe(mod.PROVIDERS.chatgpt, 'bad', mock({}, false, 401))
+  const r4 = await mod.probe(sr('chatgpt'), 'bad', mock({}, false, 401))
   assert.equal(r4.ok, false, 'probe 401 → fail')
-  const r5 = await mod.probe(mod.PROVIDERS.gemini, 'k', mock({}, true, 200))
+  const r5 = await mod.probe(sr('gemini'), 'k', mock({}, true, 200))
   assert.equal(r5.ok, true, 'gemini ?key= probe ok')
 
-  // noBalanceApi 的 fetchBalance 必须返回 unsupported（不发请求）
-  let fetched = false
-  const r6 = await mod.fetchBalance(mod.PROVIDERS.claude, 'k', async () => { fetched = true; return mock({})() })
-  assert.equal(r6.unsupported, true, 'claude balance unsupported')
-  assert.equal(fetched, false, 'no request fired for noBalanceApi')
+  // claude 探活：请求头必须带 x-api-key + anthropic-version 双头
+  let seenHeaders = null
+  await mod.probe(sr('claude'), 'sk-ant-1', async (u, init) => { seenHeaders = init.headers; return { ok: true, status: 200 } })
+  assert.equal(seenHeaders['x-api-key'], 'sk-ant-1', 'claude x-api-key header')
+  assert.equal(seenHeaders['anthropic-version'], '2023-06-01', 'claude version header')
+  assert.ok(!seenHeaders.Authorization, 'claude probe no Authorization')
 
-  // fetchProvider 自动分层
-  const r7 = await mod.fetchProvider(mod.PROVIDERS.kimi, 'k', mock({ data: { available_balance: 3.14 } }))
-  assert.ok(r7.ok && r7.remaining === 3.14, 'fetchProvider → balance tier')
-  const r8 = await mod.fetchProvider(mod.PROVIDERS.grok, 'k', mock({}, true, 200))
-  assert.ok(r8.probeOnly && r8.ok, 'fetchProvider → probe tier')
+  // 非 balance 源调 fetchBalance → unsupported（不发请求）
+  let fetched = false
+  const r6 = await mod.fetchBalance(sr('claude'), 'k', async () => { fetched = true; return mock({})() })
+  assert.equal(r6.unsupported, true, 'probe source → balance unsupported')
+  assert.equal(fetched, false, 'no request fired for wrong kind')
+
+  // fetchSource 按 kind 分发 + probeOnly 标记
+  const r7 = await mod.fetchSource(sr('kimi'), 'k', mock({ data: { available_balance: 3.14 } }))
+  assert.ok(r7.ok && r7.remaining === 3.14, 'fetchSource(balance) → balance tier')
+  const r8 = await mod.fetchSource(sr('grok'), 'k', mock({}, true, 200))
+  assert.ok(r8.probeOnly && r8.ok, 'fetchSource(probe) → probe tier')
+
+  // fetchAll：多源逐条取数，缺 key 的源记 unconfigured，顺序与 sources 一致
+  const seen = []
+  const ra = await mod.fetchAll(mod.PROVIDERS.kimi, (s, i) => {
+    seen.push(s.id)
+    return i === 0 ? 'k1' : (i === 1 ? '' : 'k3')   // 第 2 源（Kimi Coding）未配置
+  }, mock({ data: { available_balance: 7.77 } }))
+  assert.deepEqual(seen, ['payg_cn', 'coding', 'payg_intl'], 'fetchAll visits in order')
+  assert.equal(ra.length, 3, 'fetchAll 3 entries')
+  assert.ok(ra[0].result.ok && ra[0].result.remaining === 7.77, 'src0 fetched')
+  assert.equal(ra[1].result.unconfigured, true, 'src1 unconfigured (empty key)')
+  assert.ok(ra[2].result.ok, 'src2 fetched (payg intl balance parse)')
 
   /* ── ④ 形象素材表 ───────────────────────────────────────────────────── */
   assert.equal(Object.keys(mod.MASCOTS).length, 9, 'nine mascots embedded')

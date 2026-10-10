@@ -4,15 +4,17 @@ Hermes 桌面客户端的多厂商余额挂件：右下角常驻一个卡通角�
 
 > 取数模板结构与字段语义移植自 [DeepSeek-Balance-Whale-Widget](https://github.com/MeteorNOX/DeepSeek-Balance-Whale-Widget)（MIT © MeteorNOX），按九家清单重写为 Hermes 磁盘插件。
 
-## 九家取数层级
+## 九家取数层级（13 个取数源，订阅与按量付费分条）
 
-| 层级 | 厂商 | 展示 |
-|---|---|---|
-| 真余额 | DeepSeek、Kimi / Moonshot（CN） | 余额数字（¥/$）、总额、今日已用 |
-| 订阅额度 | MiniMax Coding、智谱 GLM Coding | 5h / 周窗口剩余 % |
-| 探活（官方无余额接口） | MiMo、ChatGPT、Claude、Gemini、Grok | key 有效性 + 余额「—」 |
+| 层级 | 源 | 厂商 | 展示 |
+|---|---|---|---|
+| 按量付费 · 真余额 | 3 | DeepSeek、Kimi（CN）、Kimi（国际） | 余额数字（¥/$）、总额、今日已用 |
+| 订阅额度 | 5 | MiniMax（CN/国际）、智谱 GLM（CN/国际）、Kimi Coding | 5h / 周窗口剩余 % |
+| 探活（官方无余额接口） | 5 | MiMo、ChatGPT、Claude、Gemini、Grok | key 有效性 + 余额「—」 |
 
-> 官方不提供「用 key 查余额」接口的厂商不是缺陷是现实——挂件如实显示探活状态，不伪造数字。
+同一厂商的**订阅与按量付费分开成条**：如 Kimi = 按量（CN）+ Kimi Coding 订阅 + 按量（国际）三源，MiniMax / 智谱 = 国内 + 国际两源，各源独立填 key、独立展示。
+
+> 官方不提供「用 key 查余额」接口的厂商不是缺陷是现实——挂件如实显示探活状态，不伪造数字。按量消费类 Admin 接口（OpenAI / Anthropic 管理密钥、MiniMax admin key）与各家按量余额缺口均在设置页注明。
 
 ## 功能
 
@@ -50,24 +52,30 @@ Hermes 桌面客户端的多厂商余额挂件：右下角常驻一个卡通角�
 - **命令面板**：`Ctrl+Shift+K` → 「余额挂件：打开设置」
 - 直接访问路由 `/balance-widget`
 
-设置页里每家一行卡片：
+设置页里每家一张卡，卡内**每个取数源一行**（订阅与按量付费分列）：
 
 | 字段 | 说明 |
 |---|---|
-| 层级徽标 | 真余额 / 订阅额度 / 探活——决定挂件显示什么数据 |
-| `DEEPSEEK_API_KEY` 等 | 该厂商的 API key，密码框输入，**只存本机插件存储（localStorage），不出本机** |
+| 源标题 + 层级徽标 | 「订阅 · 国内」「按量付费 · 国际」等——决定该行数据形态 |
+| `DEEPSEEK_API_KEY`、`KIMI_CODING_KEY` 等 | 该源的 key，密码框输入，**只存本机插件存储（localStorage），不出本机**；首源沿用旧存储键，升级零迁移 |
 | 测试连通性 | 不填 key 直接点会提示；填了真 key 会向厂商官方接口发一次真实查询，显示余额 / 窗口 / 探活结果 |
 
 各厂商 key 获取处：
 
-| 厂商 | 控制台 |
+| 源 | 控制台 |
 |---|---|
-| DeepSeek | platform.deepseek.com → API Keys |
-| MiniMax | platform.minimaxi.com → 接口密钥（Coding 计划另有专属接口） |
-| 智谱 GLM | open.bigmodel.cn → API Keys |
-| Kimi / Moonshot | platform.moonshot.cn → API Keys |
-| MiMo | token-plan 端点（当前无余额接口，填 key 仅探活） |
+| DeepSeek 按量付费 | platform.deepseek.com → API Keys |
+| MiniMax 订阅（国内） | platform.minimaxi.com → 接口密钥（仅 Coding Plan 订阅账号有效） |
+| MiniMax 订阅（国际） | api.minimax.io 对应平台，独立账号与 key |
+| 智谱 GLM 订阅（国内） | open.bigmodel.cn → API Keys（订阅与按量充值账号同口，按 type 识别） |
+| 智谱 GLM 订阅（国际） | z.ai 平台，独立账号与 key |
+| Kimi 按量（国内） | platform.moonshot.cn → API Keys |
+| Kimi Coding 订阅 | kimi.com/code 控制台 → 独立 key（与 Moonshot API key 不通用） |
+| Kimi 按量（国际） | api.moonshot.ai 对应平台，独立账号与 key |
+| MiMo | token-plan 端点（无余额接口，填 key 仅探活） |
 | ChatGPT / Claude / Gemini / Grok | 各家官方 API 控制台（均无余额接口，填 key 仅探活） |
+
+未配置的源在弹窗里显示「未配置 key」，不影响同厂商其他源展示。
 
 ### 2. 挂件控制（设置页顶部）
 
