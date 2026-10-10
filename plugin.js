@@ -266,6 +266,88 @@ export function sourceTier(s) {
 
 
 /**
+ * hermes-balance-widget — token 计价（默认牌价 + 自定义单价 + 今日估算）
+ * ============================================================================
+ * 无余额接口的厂商（探活层）按「token × 每百万单价」估算消费；每家厂商可
+ * 自定义四项单价（输入 / 输出 / 缓存命中 / 缓存创建，单位：每百万 tokens），
+ * 任一字段可为空 → 空则回落默认牌价。
+ *
+ * 数据源：host.state.focusedUsage 的 input/output（会话累计 token）与
+ * cache_hit_pct（会话缓存命中率 0-100）。宿主无「缓存创建」明细，故该单价
+ * 保留配置位但估算中 token 恒为 0（见 estimateCost 注释）。
+ *
+ * 默认牌价来自 2026-10 中文社区/官方文档搜索，各注 source；牌价随厂商调价
+ * 过期，自定义单价随时可覆盖。
+ */
+
+/** 价格存储键 / 今日 token 观测键（与 key.<pid>、obs.<pid> 同构）。 */
+export function priceKey(pid) { return 'price.' + pid }
+export function tokenKey(pid) { return 'tk.' + pid }
+
+/** 每家的默认牌价（每百万 tokens，cur 为该厂商展示币种）。 */
+export const DEFAULT_PRICES = {
+  deepseek: { cur: 'CNY', in: 3, out: 6, hit: 0.025, create: null,
+    note: 'DeepSeek V4：缓存命中 0.025 / 未命中 3 / 输出 6 元每 M（2026-05 社区报道）' },
+  minimax: { cur: 'CNY', in: 7.2, out: 36, hit: null, create: null,
+    note: 'MiniMax M2.7 官方 $1/$5（按 ¥7.2 折 ¥7.2/¥36 每 M；M3 为 $0.30/$1.20）' },
+  glm: { cur: 'CNY', in: 0.8, out: 2.8, hit: 0.23, create: null,
+    note: 'GLM-5.3-Flash：0.0008 / 0.0028 / 缓存命中 0.00023 元每千 tokens' },
+  kimi: { cur: 'CNY', in: 20, out: 100, hit: 2, create: 20,
+    note: 'Kimi K3 官方：输入 20 / 输出 100 / 缓存写入 20 / 命中 2 元每 M' },
+  mimo: { cur: 'CNY', in: 1, out: 2, hit: 0.02, create: null,
+    note: 'MiMo-V2.5 牌价：命中 0.02 / 输入 1 / 输出 2 元每 M（V2.6 以官网为准）' },
+  chatgpt: { cur: 'USD', in: 4, out: 20, hit: 0.4, create: null,
+    note: 'GPT-5.6 Sol：$4 / $20，缓存输入 $0.40 每 M（促销价，官方列示至 2026-11）' },
+  claude: { cur: 'USD', in: 2, out: 10, hit: 0.2, create: 2.5,
+    note: 'Claude Sonnet 5：$2 / $10，缓存读 $0.20、5 分钟缓存写 $2.5 每 M' },
+  gemini: { cur: 'USD', in: 1.5, out: 9, hit: 0.15, create: null,
+    note: 'Gemini 3.5 Flash：$1.5 / $9，缓存输入 $0.15 每 M' },
+  grok: { cur: 'USD', in: 2, out: 6, hit: 0.5, create: null,
+    note: 'Grok 4.6：$2 / $6，缓存输入 $0.50 每 M' },
+}
+
+const nOrNull = (v) => (typeof v === 'number' && isFinite(v) ? v : null)
+
+/**
+ * 生效单价：自定义逐字段覆盖默认；空（null/undefined/缺）→ 回落默认；
+ * 两侧都没有 → null（该字段不计价）。0 是合法值（= 该项免费）。
+ * 返回 { cur, in, out, hit, create }，数值或 null。
+ */
+export function effectivePrices(pid, custom) {
+  const d = DEFAULT_PRICES[pid] || {}
+  const c = custom || {}
+  const pick = (k) => (c[k] != null ? nOrNull(c[k]) : nOrNull(d[k]))
+  return { cur: d.cur || 'CNY', in: pick('in'), out: pick('out'), hit: pick('hit'), create: pick('create') }
+}
+
+/**
+ * 今日估算消费（厂商币种，每百万单价）：
+ *   未命中输入 × in + 命中输入 × hit（缺 hit 单价按 in 计，不低估） + 输出 × out
+ * 输入按 cache_hit_pct 在累计时拆分（见挂件 trackUsage）；缓存创建无宿主
+ * 数据源，tokens 恒缺省 → 该项贡献 0（配置位保留，等宿主提供明细后启用）。
+ * in/out 任一未配置 → 返回 null（无法估算）。
+ */
+export function estimateCost(tok, pr) {
+  if (!tok || !pr) return null
+  if (typeof pr.in !== 'number' || typeof pr.out !== 'number') return null
+  const inTotal = Number(tok.in) || 0
+  const inHit = Math.min(Number(tok.inHit) || 0, inTotal)
+  const inPlain = inTotal - inHit
+  const hitP = typeof pr.hit === 'number' ? pr.hit : pr.in
+  const cost = (inPlain * pr.in + inHit * hitP + (Number(tok.out) || 0) * pr.out) / 1e6
+  return cost
+}
+
+/** token 计数格式化：1234 → 1.2k、1500000 → 1.5M。 */
+export function fmtTokens(n) {
+  const v = Number(n) || 0
+  if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M'
+  if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k'
+  return String(Math.round(v))
+}
+
+
+/**
  * hermes-balance-widget — 取数执行器（多源版）
  * ============================================================================
  * 模板驱动的三态取数：按量付费真余额 / 订阅额度 / 探活。纯函数 + 注入式
@@ -467,7 +549,10 @@ export async function fetchAll(provider, keyFor, fetchImpl = fetch) {
  *     九家厂商并切换角色与取数；未命中回退配置的 mainPid
  *   - 余额预警：低于阈值 toast + 提示音（触发后回升复位，避免刷屏）
  *   - 今日已用：本地观测余额下降累计（充值不冲掉，跨天重置）
- *   - 每轮消耗：订阅 host.state.busy / focusedUsage，按 cost_usd 增量结算
+ *   - 每轮消耗：订阅 host.state.busy / focusedUsage，按 cost_usd 增量结算；
+ *     cost_usd 缺失时回退「token 增量 × 自定义单价」估算
+ *   - 今日估算：无余额接口的厂商（探活层）按 focusedUsage 的 input/output
+ *     token 增量 × 每百万单价估算今日消费（cache_hit_pct 拆缓存命中部分）
  *   - 任务结束音：busy true→false 播 chime
  *   - 随机语句：分角色语句池（每家 ≥5 条社区梗），弹窗底部轮换
  *   - 音效与提示：WebAudio 合成（按压 pop / chime / warn，音量可调）
@@ -836,6 +921,49 @@ function todayKey() {
   return new Date().toISOString().slice(0, 10)
 }
 
+/**
+ * 今日 token 观测（focusedUsage 的 input/output 为会话累计值）：
+ * - 增量结算：now - last；now < last 视为换会话/重置，当前值整体是未记账的新量
+ * - 跨天：重置计数并以当前值为基线（昨天的累计不滚入今天）
+ * - cache_hit_pct（0-100，会话级近似）拆出缓存命中部分 inHit，供单价分档
+ * 写入 tokenKey(pid) = { day, in, out, inHit, lastIn, lastOut }。
+ */
+export function observeTokens(ctx, pid, usage) {
+  if (!ctx || !usage) return null
+  const inNow = Number(usage.input) || 0
+  const outNow = Number(usage.output) || 0
+  const pct = typeof usage.cache_hit_pct === 'number' && usage.cache_hit_pct >= 0
+    ? Math.min(usage.cache_hit_pct, 100) : null
+  const key = tokenKey(pid)
+  let rec = ctx.storage.get(key, null)
+  if (!rec || rec.day !== todayKey()) {
+    // 新天或首见：以当前累计为基线，只从下一次增量开始记账
+    rec = { day: todayKey(), in: 0, out: 0, inHit: 0, lastIn: inNow, lastOut: outNow }
+    ctx.storage.set(key, rec)
+    return rec
+  }
+  let dIn = inNow - rec.lastIn
+  let dOut = outNow - rec.lastOut
+  if (dIn < 0) dIn = inNow      // 会话重置：新会话的当前值全部是未记账量
+  if (dOut < 0) dOut = outNow
+  rec.lastIn = inNow
+  rec.lastOut = outNow
+  if (dIn > 0) {
+    rec.in += dIn
+    if (pct != null) rec.inHit += dIn * pct / 100
+  }
+  if (dOut > 0) rec.out += dOut
+  ctx.storage.set(key, rec)
+  return rec
+}
+
+/** 今日 token 记账（无记录/跨天 → null）。 */
+export function todayTokens(ctx, pid) {
+  if (!ctx) return null
+  const rec = ctx.storage.get(tokenKey(pid), null)
+  return rec && rec.day === todayKey() ? rec : null
+}
+
 /* ── 今日已用观测：余额下降累计、充值不冲掉、跨天重置 ───────────────────── */
 function observeDrop(ctx, pid, current) {
   if (!ctx || current == null) return null
@@ -892,7 +1020,8 @@ export function mountWidget(ctx, opts = {}) {
   const state = {
     /** [{ src, result }]，顺序与 provider.sources 一致；null = 尚未首查。 */
     results: null, busy: false, unmounted: false,
-    turnCost: null, costAtBusyStart: null,
+    turnCost: null, turnCur: null, costAtBusyStart: null, tokAtBusyStart: null,
+    lastUsage: null,
     phraseIdx: Math.floor(Math.random() * phrasePool().length),
     popEl: null, phraseTimer: null,
     alerted: {}, unsubs: [], timer: null,
@@ -999,7 +1128,10 @@ export function mountWidget(ctx, opts = {}) {
     state.results = null
     state.alerted = {}
     state.turnCost = null
+    state.turnCur = null
     state.costAtBusyStart = null
+    state.tokAtBusyStart = null
+    state.lastUsage = null
     state.phraseIdx = Math.floor(Math.random() * phrasePool().length)
     if (state.popEl) renderPop()
     refresh()
@@ -1131,6 +1263,19 @@ export function mountWidget(ctx, opts = {}) {
     refresh()
   }
 
+  /**
+   * 今日估算（探活层主数值与明细共用）：
+   * 返回 { cost, pr, tok } 成功；{ why } 说明未就绪原因；null 无 token 记录。
+   */
+  function probeEstimate(pid) {
+    const tok = todayTokens(ctx, pid)
+    if (!tok || (tok.in <= 0 && tok.out <= 0)) return null
+    const pr = effectivePrices(pid, ctx ? ctx.storage.get(priceKey(pid), null) : null)
+    const cost = estimateCost(tok, pr)
+    if (cost == null) return { why: '单价未配置（设置页可填）' }
+    return { cost, pr, tok }
+  }
+
   function renderPop() {
     const pop = state.popEl
     if (!pop || state.unmounted) return
@@ -1165,8 +1310,15 @@ export function mountWidget(ctx, opts = {}) {
       big = w0 && w0.percent != null ? w0.percent.toFixed(1) + '%' : '—'
       sub = pSrc.label + ' · ' + (w0 ? w0.label + '剩余' : '额度')
     } else {
-      big = '✓'
-      sub = 'key 可用 · 官方无余额接口'
+      // 探活层：官方无余额接口 → 今日 token × 自定义单价估算
+      const est = probeEstimate(activePid)
+      if (est != null) {
+        big = money(est.cost, est.pr.cur)
+        sub = '今日估算 · 按 token 计价'
+      } else {
+        big = '✓'
+        sub = 'key 可用 · 官方无余额接口'
+      }
     }
 
     /**
@@ -1194,8 +1346,16 @@ export function mountWidget(ctx, opts = {}) {
         rows.push(['状态', r.error ? ('请求失败：' + r.error)
           : r.status ? ('HTTP ' + r.status + (r.parse ? ' · 字段未命中' : ''))
           : (r.note || '取数失败')])
-      } else if (src.kind === 'probe' && isPrimary) {
-        rows.push(['状态', '✓ key 可用'])
+      } else if (src.kind === 'probe') {
+        rows.push(['状态', r && r.ok ? '✓ key 可用' : '—'])
+        const est = probeEstimate(activePid)
+        if (est && est.tok && (est.tok.in > 0 || est.tok.out > 0)) {
+          rows.push(['今日输入', fmtTokens(est.tok.in) + ' tok'])
+          rows.push(['今日输出', fmtTokens(est.tok.out) + ' tok'])
+          rows.push(['今日估算', money(est.cost, est.pr.cur)])
+        } else if (est && est.why) {
+          rows.push(['今日估算', est.why])
+        }
       }
       return rows
     }
@@ -1288,7 +1448,9 @@ export function mountWidget(ctx, opts = {}) {
       }
     }
 
-    if (state.turnCost != null) emitRows([['每轮消耗', '$' + state.turnCost.toFixed(4)]])
+    if (state.turnCost != null) {
+      emitRows([['每轮消耗', money(state.turnCost, state.turnCur || 'USD')]])
+    }
 
     // 阈值预警：逐真余额源展示（未达阈值的源不显示）
     if (cfg.alertEnabled && cfg.alertThreshold > 0 && res) {
@@ -1338,14 +1500,39 @@ export function mountWidget(ctx, opts = {}) {
         const usage = host.state.focusedUsage && host.state.focusedUsage.get
           ? host.state.focusedUsage.get() : null
         const cost = usage && typeof usage.cost_usd === 'number' ? usage.cost_usd : null
+        const tok = usage ? {
+          in: Number(usage.input) || 0, out: Number(usage.output) || 0,
+          pct: typeof usage.cache_hit_pct === 'number' ? usage.cache_hit_pct : null,
+        } : null
         if (busy) {
-          if (wasBusy !== true) state.costAtBusyStart = cost
+          if (wasBusy !== true) {
+            state.costAtBusyStart = cost
+            state.tokAtBusyStart = tok
+          }
         } else if (wasBusy === true) {
-          // 任务结束：结算本轮 cost 增量 + chime
+          // 任务结束：优先 cost_usd 增量；宿主未报成本时按 token 增量 × 自定义单价估算
           if (cost != null && state.costAtBusyStart != null && cost >= state.costAtBusyStart) {
             state.turnCost = +(cost - state.costAtBusyStart).toFixed(6)
+            state.turnCur = 'USD'
+          } else if (tok && state.tokAtBusyStart) {
+            const base = state.tokAtBusyStart
+            let dIn = tok.in - base.in
+            let dOut = tok.out - base.out
+            if (dIn < 0) dIn = tok.in
+            if (dOut < 0) dOut = tok.out
+            if (dIn > 0 || dOut > 0) {
+              const pr = effectivePrices(activePid, ctx ? ctx.storage.get(priceKey(activePid), null) : null)
+              const pct = tok.pct != null ? tok.pct : base.pct
+              const est = estimateCost(
+                { in: dIn, out: dOut, inHit: pct != null ? dIn * pct / 100 : 0 }, pr)
+              if (est != null) {
+                state.turnCost = +est.toFixed(6)
+                state.turnCur = pr.cur
+              }
+            }
           }
           state.costAtBusyStart = null
+          state.tokAtBusyStart = null
           if (cfg.sfx) sfx.chime(cfg.sfxVolume)
           renderPop()
         }
@@ -1354,7 +1541,9 @@ export function mountWidget(ctx, opts = {}) {
     }
     if (typeof host !== 'undefined' && host.state && host.state.focusedUsage &&
         typeof host.state.focusedUsage.subscribe === 'function') {
-      state.unsubs.push(host.state.focusedUsage.subscribe(() => {
+      state.unsubs.push(host.state.focusedUsage.subscribe((usage) => {
+        // 记账不依赖弹窗开关：会话累计值变化即增量结算进今日 token
+        if (!state.unmounted) observeTokens(ctx, activePid, usage)
         if (state.popEl && !state.unmounted) renderPop()
       }))
     }
@@ -1490,6 +1679,20 @@ function writeKey(ctx, pid, idx, sid, value) {
   else ctx.storage.remove(k)
 }
 
+/** 单价读写：{in,out,hit,create} 数值或 null（null = 用默认牌价）。 */
+function readPrice(ctx, pid) {
+  const raw = ctx ? ctx.storage.get(priceKey(pid), null) : null
+  return raw && typeof raw === 'object' ? raw : {}
+}
+function writePrice(ctx, pid, patchObj) {
+  if (!ctx) return
+  const cur = readPrice(ctx, pid)
+  ctx.storage.set(priceKey(pid), Object.assign({}, cur, patchObj))
+}
+const PRICE_FIELDS = [
+  ['in', '输入'], ['out', '输出'], ['hit', '缓存命中'], ['create', '缓存创建'],
+]
+
 const TIER_LABEL = {
   balance: { text: '按量付费 · 真余额', color: '#16a34a' },
   quota: { text: '订阅额度', color: '#2563eb' },
@@ -1585,6 +1788,69 @@ function SourceRow({ pid, idx }) {
   })
 }
 
+/** 四项单价（每百万 tokens，可空 = 回落默认牌价）+ 今日估算预览。 */
+function PriceRow({ pid }) {
+  const def = DEFAULT_PRICES[pid] || {}
+  const cur = def.cur === 'USD' ? '$' : '¥'
+  const [vals, setVals] = useState(() => {
+    const stored = readPrice(gCtx, pid)
+    return {
+      in: stored.in != null ? String(stored.in) : '',
+      out: stored.out != null ? String(stored.out) : '',
+      hit: stored.hit != null ? String(stored.hit) : '',
+      create: stored.create != null ? String(stored.create) : '',
+    }
+  })
+
+  function set(field, text) {
+    setVals((v) => Object.assign({}, v, { [field]: text }))
+    const n = Number(text)
+    writePrice(gCtx, pid, { [field]: text.trim() === '' || !isFinite(n) ? null : n })
+  }
+
+  const eff = effectivePrices(pid, readPrice(gCtx, pid))
+  const tok = gCtx ? gCtx.storage.get(tokenKey(pid), null) : null
+  const est = tok && (tok.in > 0 || tok.out > 0) ? estimateCost(tok, eff) : null
+
+  const cell = { display: 'flex', flexDirection: 'column', gap: 3 }
+  const lbl = { fontSize: 11, opacity: 0.65 }
+  const inputStyle = { fontSize: 12.5, width: '100%', boxSizing: 'border-box' }
+
+  return jsxs('div', {
+    style: { marginTop: 9, paddingTop: 8, borderTop: '1px dashed rgba(128,128,128,.28)',
+             display: 'flex', flexDirection: 'column', gap: 7 },
+    children: [
+      jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }, children: [
+        jsx('strong', { style: { fontSize: 12.5 }, children: '单价（每百万 tokens）' }),
+        jsx('span', { style: { fontSize: 11, opacity: 0.6 },
+          children: '留空 = 默认牌价 · ' + (def.note || '无默认牌价，留空不估算') }),
+      ] }),
+      jsxs('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }, children:
+        PRICE_FIELDS.map(([f, label]) => jsx('div', { style: cell, children: [
+          jsx('span', { style: lbl, children: label + '（' + cur + '）' }),
+          jsx(Input, {
+            type: 'number', min: 0, step: 'any', value: vals[f],
+            placeholder: def[f] != null ? String(def[f]) : '—',
+            style: inputStyle,
+            onChange: (e) => set(f, e.target.value),
+          }),
+        ] }, f)),
+      }),
+      jsx('div', { style: { fontSize: 11.5, opacity: 0.7, lineHeight: 1.5 }, children:
+        est != null
+          ? '今日估算：' + money2(est, eff.cur) + '（输入 ' + fmtTokens(tok.in) + ' / 输出 ' + fmtTokens(tok.out) + ' tok）'
+          : '今日估算：今日暂无 token 用量' }),
+    ],
+  })
+}
+
+/** 金额格式（shell 内联版，与挂件 money 同规则）。 */
+function money2(v, currency) {
+  if (v == null) return '—'
+  const sym = currency === 'USD' ? '$' : '¥'
+  return sym + (Math.round(v * 10000) / 10000).toLocaleString()
+}
+
 /** 厂商卡：头部（名称 + 说明）+ 逐源行（订阅 / 按量付费分开成条）。 */
 function ProviderRow({ pid }) {
   const p = PROVIDERS[pid]
@@ -1595,6 +1861,7 @@ function ProviderRow({ pid }) {
     ] }),
     p.apiNote ? jsx('div', { style: { fontSize: 11.5, opacity: 0.65, lineHeight: 1.5 }, children: p.apiNote }) : null,
     ...p.sources.map((s, i) => jsx(SourceRow, { pid, idx: i }, s.id)),
+    jsx(PriceRow, { pid }),
   ] })
 }
 

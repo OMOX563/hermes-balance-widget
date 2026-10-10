@@ -24,6 +24,7 @@ import { useState } from 'react'
 import { PROVIDERS, PROVIDER_ORDER, sourceTier, srcKey } from './providers.js'
 import { mountWidget, unmountWidget } from './widget.js'
 import { fetchSource } from './balance.js'
+import { DEFAULT_PRICES, effectivePrices, estimateCost, priceKey, tokenKey, fmtTokens } from './pricing.js'
 
 const ID = 'hermes-balance-widget'
 
@@ -75,6 +76,20 @@ function writeKey(ctx, pid, idx, sid, value) {
   if (v) ctx.storage.set(k, v)
   else ctx.storage.remove(k)
 }
+
+/** 单价读写：{in,out,hit,create} 数值或 null（null = 用默认牌价）。 */
+function readPrice(ctx, pid) {
+  const raw = ctx ? ctx.storage.get(priceKey(pid), null) : null
+  return raw && typeof raw === 'object' ? raw : {}
+}
+function writePrice(ctx, pid, patchObj) {
+  if (!ctx) return
+  const cur = readPrice(ctx, pid)
+  ctx.storage.set(priceKey(pid), Object.assign({}, cur, patchObj))
+}
+const PRICE_FIELDS = [
+  ['in', '输入'], ['out', '输出'], ['hit', '缓存命中'], ['create', '缓存创建'],
+]
 
 const TIER_LABEL = {
   balance: { text: '按量付费 · 真余额', color: '#16a34a' },
@@ -171,6 +186,69 @@ function SourceRow({ pid, idx }) {
   })
 }
 
+/** 四项单价（每百万 tokens，可空 = 回落默认牌价）+ 今日估算预览。 */
+function PriceRow({ pid }) {
+  const def = DEFAULT_PRICES[pid] || {}
+  const cur = def.cur === 'USD' ? '$' : '¥'
+  const [vals, setVals] = useState(() => {
+    const stored = readPrice(gCtx, pid)
+    return {
+      in: stored.in != null ? String(stored.in) : '',
+      out: stored.out != null ? String(stored.out) : '',
+      hit: stored.hit != null ? String(stored.hit) : '',
+      create: stored.create != null ? String(stored.create) : '',
+    }
+  })
+
+  function set(field, text) {
+    setVals((v) => Object.assign({}, v, { [field]: text }))
+    const n = Number(text)
+    writePrice(gCtx, pid, { [field]: text.trim() === '' || !isFinite(n) ? null : n })
+  }
+
+  const eff = effectivePrices(pid, readPrice(gCtx, pid))
+  const tok = gCtx ? gCtx.storage.get(tokenKey(pid), null) : null
+  const est = tok && (tok.in > 0 || tok.out > 0) ? estimateCost(tok, eff) : null
+
+  const cell = { display: 'flex', flexDirection: 'column', gap: 3 }
+  const lbl = { fontSize: 11, opacity: 0.65 }
+  const inputStyle = { fontSize: 12.5, width: '100%', boxSizing: 'border-box' }
+
+  return jsxs('div', {
+    style: { marginTop: 9, paddingTop: 8, borderTop: '1px dashed rgba(128,128,128,.28)',
+             display: 'flex', flexDirection: 'column', gap: 7 },
+    children: [
+      jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }, children: [
+        jsx('strong', { style: { fontSize: 12.5 }, children: '单价（每百万 tokens）' }),
+        jsx('span', { style: { fontSize: 11, opacity: 0.6 },
+          children: '留空 = 默认牌价 · ' + (def.note || '无默认牌价，留空不估算') }),
+      ] }),
+      jsxs('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }, children:
+        PRICE_FIELDS.map(([f, label]) => jsx('div', { style: cell, children: [
+          jsx('span', { style: lbl, children: label + '（' + cur + '）' }),
+          jsx(Input, {
+            type: 'number', min: 0, step: 'any', value: vals[f],
+            placeholder: def[f] != null ? String(def[f]) : '—',
+            style: inputStyle,
+            onChange: (e) => set(f, e.target.value),
+          }),
+        ] }, f)),
+      }),
+      jsx('div', { style: { fontSize: 11.5, opacity: 0.7, lineHeight: 1.5 }, children:
+        est != null
+          ? '今日估算：' + money2(est, eff.cur) + '（输入 ' + fmtTokens(tok.in) + ' / 输出 ' + fmtTokens(tok.out) + ' tok）'
+          : '今日估算：今日暂无 token 用量' }),
+    ],
+  })
+}
+
+/** 金额格式（shell 内联版，与挂件 money 同规则）。 */
+function money2(v, currency) {
+  if (v == null) return '—'
+  const sym = currency === 'USD' ? '$' : '¥'
+  return sym + (Math.round(v * 10000) / 10000).toLocaleString()
+}
+
 /** 厂商卡：头部（名称 + 说明）+ 逐源行（订阅 / 按量付费分开成条）。 */
 function ProviderRow({ pid }) {
   const p = PROVIDERS[pid]
@@ -181,6 +259,7 @@ function ProviderRow({ pid }) {
     ] }),
     p.apiNote ? jsx('div', { style: { fontSize: 11.5, opacity: 0.65, lineHeight: 1.5 }, children: p.apiNote }) : null,
     ...p.sources.map((s, i) => jsx(SourceRow, { pid, idx: i }, s.id)),
+    jsx(PriceRow, { pid }),
   ] })
 }
 

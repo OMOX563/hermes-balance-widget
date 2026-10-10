@@ -263,6 +263,83 @@ try {
     '.addEventListener(\'load\'',    // 解码后重摆
   ]) assert.ok(src.includes(needle), 'hitbox presence: ' + needle)
 
+  /* ── ⑤d token 计价（默认牌价 / 自定义覆盖 / 估算）────────────────────── */
+  // 九家都有默认牌价且币种合法
+  for (const id of expected) {
+    const d = mod.DEFAULT_PRICES[id]
+    assert.ok(d, id + ' default price exists')
+    assert.ok(d.cur === 'CNY' || d.cur === 'USD', id + ' price currency')
+    assert.ok(typeof d.in === 'number' && d.in >= 0, id + ' price in')
+    assert.ok(typeof d.out === 'number' && d.out >= 0, id + ' price out')
+    assert.ok(d.note && d.note.length > 8, id + ' price note cites source')
+  }
+  // 自定义逐字段覆盖；空字段回落默认；0 合法（免费）
+  const eff1 = mod.effectivePrices('claude', { in: 5 })
+  assert.equal(eff1.in, 5, 'custom in overrides default')
+  assert.equal(eff1.out, 10, 'untouched field falls back to default')
+  assert.equal(eff1.hit, 0.2, 'hit falls back to default')
+  assert.equal(eff1.cur, 'USD', 'currency from default table')
+  const eff2 = mod.effectivePrices('mimo', { in: 0, out: null })
+  assert.equal(eff2.in, 0, 'explicit 0 kept (free tier)')
+  assert.equal(eff2.out, 2, 'null falls back to default')
+  assert.equal(mod.effectivePrices('nope', {}).in, null, 'unknown pid → all null')
+  // 估算：未命中输入×in + 命中×hit + 输出×out，/1e6
+  const cost = mod.estimateCost(
+    { in: 800000, inHit: 200000, out: 100000 },
+    { cur: 'USD', in: 2, out: 10, hit: 0.2 })
+  // 0.6M×2 + 0.2M×0.2 + 0.1M×10 = 1.2 + 0.04 + 1.0 = 2.24
+  assert.equal(cost, 2.24, 'estimate math: plain×in + hit×hit + out×out')
+  // hit 单价缺失 → 按 in 计（不低估）
+  const cost2 = mod.estimateCost({ in: 1000000, inHit: 1000000, out: 0 },
+    { cur: 'CNY', in: 3, out: 6, hit: null })
+  assert.equal(cost2, 3, 'missing hit price → billed at in price')
+  // in/out 缺单价 → 不可估
+  assert.equal(mod.estimateCost({ in: 100, out: 100 }, { cur: 'CNY', in: null, out: 2 }), null,
+    'missing in price → null')
+  assert.equal(mod.estimateCost(null, { in: 1, out: 1 }), null, 'no tokens → null')
+  // inHit 夹取（不能超过总输入）
+  const cost3 = mod.estimateCost({ in: 1000000, inHit: 5000000, out: 0 },
+    { cur: 'CNY', in: 1, out: 1, hit: 0 })
+  assert.equal(cost3, 0, 'inHit clamped to inTotal (all billed at hit=0)')
+  // 今日 token 观测：增量、换会话回卷、跨天重置（exported for test）
+  const mem = new Map()
+  const ctxT = { storage: { get: (k, d) => (mem.has(k) ? mem.get(k) : d), set: (k, v) => mem.set(k, v) } }
+  mod.observeTokens(ctxT, 'mimo', { input: 1000, output: 100, cache_hit_pct: 50 })
+  let t = mod.todayTokens(ctxT, 'mimo')
+  assert.equal(t.in, 0, 'first sight = baseline, no accounting')
+  mod.observeTokens(ctxT, 'mimo', { input: 3000, output: 400, cache_hit_pct: 50 })
+  t = mod.todayTokens(ctxT, 'mimo')
+  assert.equal(t.in, 2000, 'delta accounted')
+  assert.equal(t.out, 300, 'output delta accounted')
+  assert.equal(t.inHit, 1000, 'hit split = delta × pct')
+  mod.observeTokens(ctxT, 'mimo', { input: 500, output: 50, cache_hit_pct: 50 })
+  t = mod.todayTokens(ctxT, 'mimo')
+  assert.equal(t.in, 2500, 'session reset → current value fully accounted')
+  assert.equal(mod.todayTokens(ctxT, 'other'), null, 'untracked pid → null')
+  // 跨天：day 不匹配 → todayTokens null，observeTokens 重置基线
+  mem.set(mod.tokenKey('mimo'), Object.assign({}, t, { day: '2000-01-01' }))
+  assert.equal(mod.todayTokens(ctxT, 'mimo'), null, 'stale day → null')
+  mod.observeTokens(ctxT, 'mimo', { input: 9999, output: 999, cache_hit_pct: 0 })
+  t = mod.todayTokens(ctxT, 'mimo')
+  assert.equal(t.day, new Date().toISOString().slice(0, 10), 'new day re-baselined')
+  assert.equal(t.in, 0, 'cross-day: old accumulation not carried over')
+  // 键约定
+  assert.equal(mod.priceKey('kimi'), 'price.kimi', 'priceKey shape')
+  assert.equal(mod.tokenKey('kimi'), 'tk.kimi', 'tokenKey shape')
+  assert.equal(mod.fmtTokens(1500000), '1.5M', 'fmtTokens M')
+  assert.equal(mod.fmtTokens(2345), '2.3k', 'fmtTokens k')
+  assert.equal(mod.fmtTokens(999), '999', 'fmtTokens raw')
+  // 设置页与挂件接线
+  for (const needle of [
+    'observeTokens',              // 会话 token 增量记账
+    'probeEstimate',              // 探活层估算
+    '今日估算',                   // 展示文案
+    '单价未配置',                 // 未配置提示
+    '每百万 tokens',              // 设置页单价栏
+    'effectivePrices',            // 覆盖逻辑
+    'tokAtBusyStart',             // 每轮消耗 token 兜底
+  ]) assert.ok(src.includes(needle), 'pricing presence: ' + needle)
+
   /* ── ⑥ 注册结构 ─────────────────────────────────────────────────────── */
   const contributions = []
   const stored = new Map()

@@ -2,8 +2,9 @@
 """
 hermes-balance-widget 构装脚本
 ============================================================================
-src/providers.js + src/balance.js + src/widget.js（模块源原样拼接，
-ESM 多 export 合法）+ src/shell.js（剥离相对 import）→ plugin.js 单文件。
+src/providers.js + src/pricing.js + src/balance.js + src/widget.js
+（模块源原样拼接，ESM 多 export 合法）+ src/shell.js（剥离相对 import）
+→ plugin.js 单文件。
 九家形象（assets/compact/*.jpg）以 base64 data URI 注入 MASCOTS 表。
 
 每处手术 assert 精确命中；node --check 语法门，不过不写产物。
@@ -38,6 +39,7 @@ def sub(text, old, new, count, label):
 
 # ── 1. 模块源 ─────────────────────────────────────────────────────────────
 providers = read('providers.js')
+pricing = read('pricing.js')
 balance = read('balance.js')
 widget = read('widget.js')
 shell = read('shell.js')
@@ -52,9 +54,13 @@ shell = sub(shell,
 shell = sub(shell,
             "import { fetchSource } from './balance.js'\n",
             '', 1, 'shell-import-balance')
+shell = sub(shell,
+            "import { DEFAULT_PRICES, effectivePrices, estimateCost, priceKey, tokenKey, fmtTokens } from './pricing.js'\n",
+            '', 1, 'shell-import-pricing')
 
 # 3. 三个源文件都不应再有任何相对 import
-for name, text in (('shell', shell), ('providers', providers), ('balance', balance), ('widget', widget)):
+for name, text in (('shell', shell), ('providers', providers), ('pricing', pricing),
+                   ('balance', balance), ('widget', widget)):
     for line in text.split('\n'):
         if "from './" in line:
             fail('%s: relative import not stripped: %r' % (name, line.strip()))
@@ -83,7 +89,7 @@ banner = '''/**
  */
 '''
 
-plugin = banner + providers + '\n\n' + balance + '\n\n' + widget + '\n\n' + shell
+plugin = banner + providers + '\n\n' + pricing + '\n\n' + balance + '\n\n' + widget + '\n\n' + shell
 
 # ── 3. 残留清点（本机路径 / 密钥模式）──────────────────────────────────────
 forbidden = ['C:\\\\Users', 'C:/Users', 'sk-', 'ghp_', 'api_key=', 'API_KEY=*** ...']
