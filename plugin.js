@@ -1730,7 +1730,7 @@ import { useState } from 'react'
 
 const ID = 'hermes-balance-widget'
 /** 版本号：发布时与 git tag 同步（Releases 里的 plugin.js 资产即此版本）。 */
-export const VERSION = '1.1.0'
+export const VERSION = '1.1.1'
 
 /** Phase 1 的取数结果只活在组件态里，不落 storage。 */
 let gCtx = null
