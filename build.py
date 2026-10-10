@@ -55,7 +55,7 @@ shell = sub(shell,
             "import { fetchSource } from './balance.js'\n",
             '', 1, 'shell-import-balance')
 shell = sub(shell,
-            "import { DEFAULT_PRICES, effectivePrices, estimateCost, priceKey, tokenKey, fmtTokens } from './pricing.js'\n",
+            "import { DEFAULT_PRICES, SCHEDULES, effectivePrices, estimateCost, dayEstimate, scheduleState, priceKey, tokenKey, fmtTokens } from './pricing.js'\n",
             '', 1, 'shell-import-pricing')
 
 # 3. 三个源文件都不应再有任何相对 import

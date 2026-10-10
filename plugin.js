@@ -278,6 +278,11 @@ export function sourceTier(s) {
  *
  * 默认牌价来自 2026-10 中文社区/官方文档搜索，各注 source；牌价随厂商调价
  * 过期，自定义单价随时可覆盖。
+ *
+ * 分时定价（DeepSeek / GLM / MiMo 三家）：配置价 = 高峰/日间价，命中非高峰
+ * 窗口时自动乘系数。窗口按北京时间（UTC+8，与本地时区无关）判定；今日
+ * token 按「记账当下所在窗口」分流进 base / d 双桶，跨窗口的用量各按各价
+ * 结算，估算与展示只差一次乘法，改单价立即全量重算。
  */
 
 /** 价格存储键 / 今日 token 观测键（与 key.<pid>、obs.<pid> 同构）。 */
@@ -344,6 +349,73 @@ export function fmtTokens(n) {
   if (v >= 1e6) return (v / 1e6).toFixed(1) + 'M'
   if (v >= 1e3) return (v / 1e3).toFixed(1) + 'k'
   return String(Math.round(v))
+}
+
+/**
+ * 分时定价窗口（三家，规则来源 2026-10 官方公告/社区查证）：
+ * - deepseek：2026-08-17 峰谷定价——工作日 9:00-12:00、14:00-18:00 高峰，
+ *   其余（含 12-14 午休、周末全天）空闲，空闲 = 高峰 ×0.5
+ * - glm：Coding Plan 积分制——工作日 14:00-18:00 高峰原价，其余时段 50% 抵扣
+ * - mimo：Token Plan 夜间优惠——北京时间 0:00-8:00 0.8x 消耗
+ * discMult = 非高峰窗口对配置单价的乘数；isPeak(p) 收北京时间小数小时。
+ */
+export const SCHEDULES = {
+  deepseek: {
+    discMult: 0.5, peakLabel: '高峰', discLabel: '空闲',
+    note: '分时：工作日 9-12/14-18 为高峰（北京时间），空闲 ×0.5，周末全天空闲',
+    isPeak: (p) => p.dow >= 1 && p.dow <= 5 &&
+      ((p.h >= 9 && p.h < 12) || (p.h >= 14 && p.h < 18)),
+  },
+  glm: {
+    discMult: 0.5, peakLabel: '高峰', discLabel: '非高峰',
+    note: '分时：工作日 14-18 为高峰（北京时间），其余时段 ×0.5（Coding Plan 积分 50% 抵扣）',
+    isPeak: (p) => p.dow >= 1 && p.dow <= 5 && p.h >= 14 && p.h < 18,
+  },
+  mimo: {
+    discMult: 0.8, peakLabel: '日间', discLabel: '夜间',
+    note: '分时：夜间 0:00-8:00（北京时间）×0.8',
+    isPeak: (p) => !(p.h >= 0 && p.h < 8),
+  },
+}
+
+/** now → 北京时间 { dow(0=周日), h(小数小时) }；+8h 后读 UTC 字段，无视本地时区。 */
+function bj(now) {
+  const t = new Date((now || new Date()).getTime() + 8 * 3600 * 1000)
+  return { dow: t.getUTCDay(), h: t.getUTCHours() + t.getUTCMinutes() / 60 + t.getUTCSeconds() / 3600 }
+}
+
+/**
+ * 当前分时状态：无分时厂商 → null；否则 { peak, mult, label, sc }。
+ * mult：高峰 1，非高峰 discMult；label：窗口名（高峰/空闲/夜间…）。
+ */
+export function scheduleState(pid, now) {
+  const sc = SCHEDULES[pid]
+  if (!sc) return null
+  const peak = sc.isPeak(bj(now))
+  return { peak, mult: peak ? 1 : sc.discMult, label: peak ? sc.peakLabel : sc.discLabel, sc }
+}
+
+/** 当前分时乘数（无分时 → 1）。 */
+export function scheduleMult(pid, now) {
+  const s = scheduleState(pid, now)
+  return s ? s.mult : 1
+}
+
+/**
+ * 今日估算（分时感知）：base 桶按原价 + d 桶（非高峰窗口入账的 token）×
+ * discMult。tok 无 d 桶或厂商无分时 → 与 estimateCost 同值。
+ * in/out 单价未配置 → null（estimateCost 语义）。
+ */
+export function dayEstimate(pid, tok, custom) {
+  if (!tok) return null
+  const pr = effectivePrices(pid, custom)
+  const base = estimateCost(tok, pr)
+  if (base == null) return null
+  const sc = SCHEDULES[pid]
+  const d = tok.d
+  if (!sc || !d || (Number(d.in) <= 0 && Number(d.out) <= 0)) return base
+  const dc = estimateCost(d, pr)
+  return dc == null ? base : base + dc * sc.discMult
 }
 
 
@@ -553,6 +625,8 @@ export async function fetchAll(provider, keyFor, fetchImpl = fetch) {
  *     cost_usd 缺失时回退「token 增量 × 自定义单价」估算
  *   - 今日估算：无余额接口的厂商（探活层）按 focusedUsage 的 input/output
  *     token 增量 × 每百万单价估算今日消费（cache_hit_pct 拆缓存命中部分）
+ *   - 分时定价：DeepSeek/GLM/MiMo 的 token 按记账时所在窗口分流 base/d 双桶，
+ *     非高峰桶估算 × 系数（详见 pricing.js SCHEDULES）
  *   - 任务结束音：busy true→false 播 chime
  *   - 随机语句：分角色语句池（每家 ≥5 条社区梗），弹窗底部轮换
  *   - 音效与提示：WebAudio 合成（按压 pop / chime / warn，音量可调）
@@ -909,8 +983,9 @@ function todayKey() {
  * - cache_hit_pct（0-100，会话级近似）拆出缓存命中部分 inHit，供单价分档
  * 写入 tokenKey(pid) = { day, in, out, inHit, lastIn, lastOut }。
  */
-export function observeTokens(ctx, pid, usage) {
+export function observeTokens(ctx, pid, usage, now) {
   if (!ctx || !usage) return null
+  const ts = now || new Date()
   const inNow = Number(usage.input) || 0
   const outNow = Number(usage.output) || 0
   const pct = typeof usage.cache_hit_pct === 'number' && usage.cache_hit_pct >= 0
@@ -929,11 +1004,19 @@ export function observeTokens(ctx, pid, usage) {
   if (dOut < 0) dOut = outNow
   rec.lastIn = inNow
   rec.lastOut = outNow
-  if (dIn > 0) {
-    rec.in += dIn
-    if (pct != null) rec.inHit += dIn * pct / 100
+  if (dIn > 0 || dOut > 0) {
+    // 分时分流：非高峰窗口产生的 token 入 d 桶（估算时 × discMult），高峰入 base
+    let b = rec
+    if (scheduleMult(pid, ts) !== 1) {
+      if (!rec.d) rec.d = { in: 0, out: 0, inHit: 0 }
+      b = rec.d
+    }
+    if (dIn > 0) {
+      b.in += dIn
+      if (pct != null) b.inHit += dIn * pct / 100
+    }
+    if (dOut > 0) b.out += dOut
   }
-  if (dOut > 0) rec.out += dOut
   ctx.storage.set(key, rec)
   return rec
 }
@@ -1002,7 +1085,7 @@ export function mountWidget(ctx, opts = {}) {
     /** [{ src, result }]，顺序与 provider.sources 一致；null = 尚未首查。 */
     results: null, busy: false, unmounted: false,
     turnCost: null, turnCur: null, costAtBusyStart: null, tokAtBusyStart: null,
-    lastUsage: null,
+    schMultAtBusyStart: null, lastUsage: null,
     phraseIdx: Math.floor(Math.random() * phrasePool().length),
     popEl: null, phraseTimer: null,
     alerted: {}, unsubs: [], timer: null,
@@ -1110,6 +1193,7 @@ export function mountWidget(ctx, opts = {}) {
     state.turnCur = null
     state.costAtBusyStart = null
     state.tokAtBusyStart = null
+    state.schMultAtBusyStart = null
     state.lastUsage = null
     state.phraseIdx = Math.floor(Math.random() * phrasePool().length)
     if (state.popEl) renderPop()
@@ -1249,10 +1333,11 @@ export function mountWidget(ctx, opts = {}) {
   function probeEstimate(pid) {
     const tok = todayTokens(ctx, pid)
     if (!tok || (tok.in <= 0 && tok.out <= 0)) return null
-    const pr = effectivePrices(pid, ctx ? ctx.storage.get(priceKey(pid), null) : null)
-    const cost = estimateCost(tok, pr)
+    const custom = ctx ? ctx.storage.get(priceKey(pid), null) : null
+    const pr = effectivePrices(pid, custom)
+    const cost = dayEstimate(pid, tok, custom)
     if (cost == null) return { why: '单价未配置（设置页可填）' }
-    return { cost, pr, tok }
+    return { cost, pr, tok, sch: scheduleState(pid) }
   }
 
   function renderPop() {
@@ -1332,6 +1417,12 @@ export function mountWidget(ctx, opts = {}) {
           rows.push(['今日输入', fmtTokens(est.tok.in) + ' tok'])
           rows.push(['今日输出', fmtTokens(est.tok.out) + ' tok'])
           rows.push(['今日估算', money(est.cost, est.pr.cur)])
+          if (est.sch && !est.sch.peak) {
+            rows.push(['分时', est.sch.label + ' ×' + est.sch.sc.discMult + ' 已折算'])
+          } else if (est.tok.d && (est.tok.d.in > 0 || est.tok.d.out > 0)) {
+            rows.push(['分时', '含' + (est.sch ? '非高峰' : '') + '用量 ×'
+              + ((est.sch && est.sch.sc.discMult) || 0.8) + ' 折算'])
+          }
         } else if (est && est.why) {
           rows.push(['今日估算', est.why])
         }
@@ -1430,6 +1521,12 @@ export function mountWidget(ctx, opts = {}) {
     if (state.turnCost != null) {
       emitRows([['每轮消耗', money(state.turnCost, state.turnCur || 'USD')]])
     }
+    const schNow = scheduleState(activePid)
+    if (schNow) {
+      emitRows([['当前时段', schNow.peak
+        ? schNow.label + '（原价）'
+        : schNow.label + ' ×' + schNow.sc.discMult]])
+    }
 
     // 阈值预警：逐真余额源展示（未达阈值的源不显示）
     if (cfg.alertEnabled && cfg.alertThreshold > 0 && res) {
@@ -1487,6 +1584,8 @@ export function mountWidget(ctx, opts = {}) {
           if (wasBusy !== true) {
             state.costAtBusyStart = cost
             state.tokAtBusyStart = tok
+            // 起点所在窗口的乘数：一轮通常跨不过窗口边界，起点定档即可
+            state.schMultAtBusyStart = scheduleMult(activePid)
           }
         } else if (wasBusy === true) {
           // 任务结束：优先 cost_usd 增量；宿主未报成本时按 token 增量 × 自定义单价估算
@@ -1505,13 +1604,15 @@ export function mountWidget(ctx, opts = {}) {
               const est = estimateCost(
                 { in: dIn, out: dOut, inHit: pct != null ? dIn * pct / 100 : 0 }, pr)
               if (est != null) {
-                state.turnCost = +est.toFixed(6)
+                const m = state.schMultAtBusyStart != null ? state.schMultAtBusyStart : 1
+                state.turnCost = +(est * m).toFixed(6)
                 state.turnCur = pr.cur
               }
             }
           }
           state.costAtBusyStart = null
           state.tokAtBusyStart = null
+          state.schMultAtBusyStart = null
           if (cfg.sfx) sfx.chime(cfg.sfxVolume)
           renderPop()
         }
@@ -1787,9 +1888,11 @@ function PriceRow({ pid }) {
     writePrice(gCtx, pid, { [field]: text.trim() === '' || !isFinite(n) ? null : n })
   }
 
-  const eff = effectivePrices(pid, readPrice(gCtx, pid))
+  const custom = readPrice(gCtx, pid)
+  const eff = effectivePrices(pid, custom)
   const tok = gCtx ? gCtx.storage.get(tokenKey(pid), null) : null
-  const est = tok && (tok.in > 0 || tok.out > 0) ? estimateCost(tok, eff) : null
+  const est = tok && (tok.in > 0 || tok.out > 0) ? dayEstimate(pid, tok, custom) : null
+  const sch = scheduleState(pid)
 
   const cell = { display: 'flex', flexDirection: 'column', gap: 3 }
   const lbl = { fontSize: 11, opacity: 0.65 }
@@ -1802,7 +1905,8 @@ function PriceRow({ pid }) {
       jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }, children: [
         jsx('strong', { style: { fontSize: 12.5 }, children: '单价（每百万 tokens）' }),
         jsx('span', { style: { fontSize: 11, opacity: 0.6 },
-          children: '留空 = 默认牌价 · ' + (def.note || '无默认牌价，留空不估算') }),
+          children: '留空 = 默认牌价 · ' + (def.note || '无默认牌价，留空不估算')
+            + (SCHEDULES[pid] ? ' · ' + SCHEDULES[pid].note : '') }),
       ] }),
       jsxs('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }, children:
         PRICE_FIELDS.map(([f, label]) => jsx('div', { style: cell, children: [
@@ -1816,9 +1920,10 @@ function PriceRow({ pid }) {
         ] }, f)),
       }),
       jsx('div', { style: { fontSize: 11.5, opacity: 0.7, lineHeight: 1.5 }, children:
-        est != null
+        (est != null
           ? '今日估算：' + money2(est, eff.cur) + '（输入 ' + fmtTokens(tok.in) + ' / 输出 ' + fmtTokens(tok.out) + ' tok）'
-          : '今日估算：今日暂无 token 用量' }),
+          : '今日估算：今日暂无 token 用量')
+          + (sch ? ' · 当前' + sch.label + (sch.peak ? '（原价）' : ' ×' + sch.sc.discMult) : '') }),
     ],
   })
 }

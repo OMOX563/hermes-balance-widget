@@ -336,6 +336,77 @@ try {
     'tokAtBusyStart',             // 每轮消耗 token 兜底
   ]) assert.ok(src.includes(needle), 'pricing presence: ' + needle)
 
+  /* ── ⑤e 分时定价（三家窗口 + 双桶估算 + 记账分流）────────────────────── */
+  assert.deepEqual(Object.keys(mod.SCHEDULES).sort(), ['deepseek', 'glm', 'mimo'],
+    'exactly three scheduled vendors')
+  for (const pid of Object.keys(mod.SCHEDULES)) {
+    const sc = mod.SCHEDULES[pid]
+    assert.ok(sc.discMult > 0 && sc.discMult < 1, pid + ' discount mult in (0,1)')
+    assert.ok(typeof sc.isPeak === 'function' && sc.note && sc.note.includes('北京时间'),
+      pid + ' window fn + note cites timezone')
+    assert.equal(mod.scheduleMult(pid, new Date(0)), mod.scheduleMult(pid, new Date(0)),
+      'deterministic for same instant')
+  }
+  // 北京时间窗口：10-14 是周三、10-17 是周六（与本地时区无关，+8h 读 UTC 字段）
+  const wed10 = new Date('2026-10-14T02:00:00Z')   // 北京 10:00 周三
+  const wed13 = new Date('2026-10-14T05:00:00Z')   // 北京 13:00 周三（午休）
+  const wed15 = new Date('2026-10-14T07:00:00Z')   // 北京 15:00 周三
+  const sat10 = new Date('2026-10-17T02:00:00Z')   // 北京 10:00 周六
+  const tue04 = new Date('2026-10-13T20:00:00Z')   // 北京 04:00 周二
+  // deepseek：工作日 9-12 / 14-18 高峰，其余空闲半价，周末全天空闲
+  assert.equal(mod.scheduleState('deepseek', wed10).peak, true, 'ds Wed 10:00 peak')
+  assert.equal(mod.scheduleState('deepseek', wed13).peak, false, 'ds Wed 13:00 lunch off')
+  assert.equal(mod.scheduleState('deepseek', wed15).peak, true, 'ds Wed 15:00 peak')
+  assert.equal(mod.scheduleState('deepseek', sat10).peak, false, 'ds Sat 10:00 off (weekend)')
+  assert.equal(mod.scheduleMult('deepseek', sat10), 0.5, 'ds weekend half price')
+  // glm：工作日 14-18 高峰，其余 ×0.5
+  assert.equal(mod.scheduleState('glm', wed15).peak, true, 'glm Wed 15:00 peak')
+  assert.equal(mod.scheduleState('glm', wed10).peak, false, 'glm Wed 10:00 off')
+  assert.equal(mod.scheduleMult('glm', wed10), 0.5, 'glm off-peak half')
+  // mimo：夜间 0-8 ×0.8，白天原价
+  assert.equal(mod.scheduleState('mimo', tue04).peak, false, 'mimo 04:00 night')
+  assert.equal(mod.scheduleMult('mimo', tue04), 0.8, 'mimo night 0.8x')
+  assert.equal(mod.scheduleMult('mimo', wed10), 1, 'mimo day full price')
+  assert.equal(mod.scheduleState('kimi', wed10), null, 'non-scheduled vendor → null')
+  assert.equal(mod.scheduleMult('kimi', wed10), 1, 'non-scheduled mult → 1')
+  // 双桶估算：base 原价 + d 桶 × discMult
+  const dTok = { in: 1000000, inHit: 0, out: 1000000, d: { in: 1000000, inHit: 0, out: 1000000 } }
+  const dCost = mod.dayEstimate('deepseek', dTok, { in: 4, out: 8, hit: null })
+  // base: 1×4 + 1×8 = 12；d: (1×4 + 1×8) × 0.5 = 6 → 18
+  assert.equal(dCost, 18, 'dayEstimate = base + d×discMult')
+  assert.equal(mod.dayEstimate('deepseek', { in: 1000000, inHit: 0, out: 0 }, { in: 4, out: 8 }),
+    4, 'base-only tokens unchanged (no d bucket)')
+  assert.equal(mod.dayEstimate('deepseek', null, {}), null, 'no tokens → null')
+  // 非分时厂商：d 桶按原价不打折（kimi 默认 in20/out100 → 1×20+1×100=120）
+  assert.equal(mod.dayEstimate('kimi', dTok, {}), 120, 'non-scheduled: d bucket billed at full price')
+  // 无默认牌价的厂商 + 空 custom → in/out 不可得 → null
+  assert.equal(mod.dayEstimate('nope', dTok, {}), null, 'no default + no custom → null')
+  // 记账分流：mimo 夜间 now → token 入 d 桶
+  const memS = new Map()
+  const ctxS = { storage: { get: (k, v) => (memS.has(k) ? memS.get(k) : v), set: (k, v) => memS.set(k, v) } }
+  mod.observeTokens(ctxS, 'mimo', { input: 1000, output: 100, cache_hit_pct: 50 }, tue04)
+  mod.observeTokens(ctxS, 'mimo', { input: 4000, output: 600, cache_hit_pct: 50 }, tue04)
+  let tr = mod.todayTokens(ctxS, 'mimo')
+  assert.equal(tr.in, 0, 'night delta → base bucket untouched')
+  assert.equal(tr.d.in, 3000, 'night delta → d bucket in')
+  assert.equal(tr.d.out, 500, 'night delta → d bucket out')
+  assert.equal(tr.d.inHit, 1500, 'night hit split in d bucket')
+  // 白天续记 → base 桶
+  mod.observeTokens(ctxS, 'mimo', { input: 5000, output: 800, cache_hit_pct: 50 }, wed10)
+  tr = mod.todayTokens(ctxS, 'mimo')
+  assert.equal(tr.in, 1000, 'day delta → base bucket')
+  assert.equal(tr.d.in, 3000, 'd bucket preserved')
+  // 接线
+  for (const needle of [
+    'dayEstimate',                    // 分时感知估算
+    'scheduleState',                  // 时段判定
+    '当前时段',                       // 弹窗行
+    'schMultAtBusyStart',             // 每轮消耗乘数
+    '分时分流',
+  ]) assert.ok(src.includes(needle), 'schedule presence: ' + needle)
+  assert.ok(src.includes("当前' + sch.label"), 'settings shows live schedule tier')
+  assert.ok(src.includes('Coding Plan 积分 50% 抵扣'), 'settings shows glm schedule note')
+
   /* ── ⑥ 注册结构 ─────────────────────────────────────────────────────── */
   const contributions = []
   const stored = new Map()

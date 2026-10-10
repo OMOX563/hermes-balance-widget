@@ -13,6 +13,8 @@
  *     cost_usd 缺失时回退「token 增量 × 自定义单价」估算
  *   - 今日估算：无余额接口的厂商（探活层）按 focusedUsage 的 input/output
  *     token 增量 × 每百万单价估算今日消费（cache_hit_pct 拆缓存命中部分）
+ *   - 分时定价：DeepSeek/GLM/MiMo 的 token 按记账时所在窗口分流 base/d 双桶，
+ *     非高峰桶估算 × 系数（详见 pricing.js SCHEDULES）
  *   - 任务结束音：busy true→false 播 chime
  *   - 随机语句：分角色语句池（每家 ≥5 条社区梗），弹窗底部轮换
  *   - 音效与提示：WebAudio 合成（按压 pop / chime / warn，音量可调）
@@ -359,8 +361,9 @@ function todayKey() {
  * - cache_hit_pct（0-100，会话级近似）拆出缓存命中部分 inHit，供单价分档
  * 写入 tokenKey(pid) = { day, in, out, inHit, lastIn, lastOut }。
  */
-export function observeTokens(ctx, pid, usage) {
+export function observeTokens(ctx, pid, usage, now) {
   if (!ctx || !usage) return null
+  const ts = now || new Date()
   const inNow = Number(usage.input) || 0
   const outNow = Number(usage.output) || 0
   const pct = typeof usage.cache_hit_pct === 'number' && usage.cache_hit_pct >= 0
@@ -379,11 +382,19 @@ export function observeTokens(ctx, pid, usage) {
   if (dOut < 0) dOut = outNow
   rec.lastIn = inNow
   rec.lastOut = outNow
-  if (dIn > 0) {
-    rec.in += dIn
-    if (pct != null) rec.inHit += dIn * pct / 100
+  if (dIn > 0 || dOut > 0) {
+    // 分时分流：非高峰窗口产生的 token 入 d 桶（估算时 × discMult），高峰入 base
+    let b = rec
+    if (scheduleMult(pid, ts) !== 1) {
+      if (!rec.d) rec.d = { in: 0, out: 0, inHit: 0 }
+      b = rec.d
+    }
+    if (dIn > 0) {
+      b.in += dIn
+      if (pct != null) b.inHit += dIn * pct / 100
+    }
+    if (dOut > 0) b.out += dOut
   }
-  if (dOut > 0) rec.out += dOut
   ctx.storage.set(key, rec)
   return rec
 }
@@ -452,7 +463,7 @@ export function mountWidget(ctx, opts = {}) {
     /** [{ src, result }]，顺序与 provider.sources 一致；null = 尚未首查。 */
     results: null, busy: false, unmounted: false,
     turnCost: null, turnCur: null, costAtBusyStart: null, tokAtBusyStart: null,
-    lastUsage: null,
+    schMultAtBusyStart: null, lastUsage: null,
     phraseIdx: Math.floor(Math.random() * phrasePool().length),
     popEl: null, phraseTimer: null,
     alerted: {}, unsubs: [], timer: null,
@@ -560,6 +571,7 @@ export function mountWidget(ctx, opts = {}) {
     state.turnCur = null
     state.costAtBusyStart = null
     state.tokAtBusyStart = null
+    state.schMultAtBusyStart = null
     state.lastUsage = null
     state.phraseIdx = Math.floor(Math.random() * phrasePool().length)
     if (state.popEl) renderPop()
@@ -699,10 +711,11 @@ export function mountWidget(ctx, opts = {}) {
   function probeEstimate(pid) {
     const tok = todayTokens(ctx, pid)
     if (!tok || (tok.in <= 0 && tok.out <= 0)) return null
-    const pr = effectivePrices(pid, ctx ? ctx.storage.get(priceKey(pid), null) : null)
-    const cost = estimateCost(tok, pr)
+    const custom = ctx ? ctx.storage.get(priceKey(pid), null) : null
+    const pr = effectivePrices(pid, custom)
+    const cost = dayEstimate(pid, tok, custom)
     if (cost == null) return { why: '单价未配置（设置页可填）' }
-    return { cost, pr, tok }
+    return { cost, pr, tok, sch: scheduleState(pid) }
   }
 
   function renderPop() {
@@ -782,6 +795,12 @@ export function mountWidget(ctx, opts = {}) {
           rows.push(['今日输入', fmtTokens(est.tok.in) + ' tok'])
           rows.push(['今日输出', fmtTokens(est.tok.out) + ' tok'])
           rows.push(['今日估算', money(est.cost, est.pr.cur)])
+          if (est.sch && !est.sch.peak) {
+            rows.push(['分时', est.sch.label + ' ×' + est.sch.sc.discMult + ' 已折算'])
+          } else if (est.tok.d && (est.tok.d.in > 0 || est.tok.d.out > 0)) {
+            rows.push(['分时', '含' + (est.sch ? '非高峰' : '') + '用量 ×'
+              + ((est.sch && est.sch.sc.discMult) || 0.8) + ' 折算'])
+          }
         } else if (est && est.why) {
           rows.push(['今日估算', est.why])
         }
@@ -880,6 +899,12 @@ export function mountWidget(ctx, opts = {}) {
     if (state.turnCost != null) {
       emitRows([['每轮消耗', money(state.turnCost, state.turnCur || 'USD')]])
     }
+    const schNow = scheduleState(activePid)
+    if (schNow) {
+      emitRows([['当前时段', schNow.peak
+        ? schNow.label + '（原价）'
+        : schNow.label + ' ×' + schNow.sc.discMult]])
+    }
 
     // 阈值预警：逐真余额源展示（未达阈值的源不显示）
     if (cfg.alertEnabled && cfg.alertThreshold > 0 && res) {
@@ -937,6 +962,8 @@ export function mountWidget(ctx, opts = {}) {
           if (wasBusy !== true) {
             state.costAtBusyStart = cost
             state.tokAtBusyStart = tok
+            // 起点所在窗口的乘数：一轮通常跨不过窗口边界，起点定档即可
+            state.schMultAtBusyStart = scheduleMult(activePid)
           }
         } else if (wasBusy === true) {
           // 任务结束：优先 cost_usd 增量；宿主未报成本时按 token 增量 × 自定义单价估算
@@ -955,13 +982,15 @@ export function mountWidget(ctx, opts = {}) {
               const est = estimateCost(
                 { in: dIn, out: dOut, inHit: pct != null ? dIn * pct / 100 : 0 }, pr)
               if (est != null) {
-                state.turnCost = +est.toFixed(6)
+                const m = state.schMultAtBusyStart != null ? state.schMultAtBusyStart : 1
+                state.turnCost = +(est * m).toFixed(6)
                 state.turnCur = pr.cur
               }
             }
           }
           state.costAtBusyStart = null
           state.tokAtBusyStart = null
+          state.schMultAtBusyStart = null
           if (cfg.sfx) sfx.chime(cfg.sfxVolume)
           renderPop()
         }

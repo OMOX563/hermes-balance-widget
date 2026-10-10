@@ -24,7 +24,7 @@ import { useState } from 'react'
 import { PROVIDERS, PROVIDER_ORDER, sourceTier, srcKey } from './providers.js'
 import { mountWidget, unmountWidget } from './widget.js'
 import { fetchSource } from './balance.js'
-import { DEFAULT_PRICES, effectivePrices, estimateCost, priceKey, tokenKey, fmtTokens } from './pricing.js'
+import { DEFAULT_PRICES, SCHEDULES, effectivePrices, estimateCost, dayEstimate, scheduleState, priceKey, tokenKey, fmtTokens } from './pricing.js'
 
 const ID = 'hermes-balance-widget'
 
@@ -206,9 +206,11 @@ function PriceRow({ pid }) {
     writePrice(gCtx, pid, { [field]: text.trim() === '' || !isFinite(n) ? null : n })
   }
 
-  const eff = effectivePrices(pid, readPrice(gCtx, pid))
+  const custom = readPrice(gCtx, pid)
+  const eff = effectivePrices(pid, custom)
   const tok = gCtx ? gCtx.storage.get(tokenKey(pid), null) : null
-  const est = tok && (tok.in > 0 || tok.out > 0) ? estimateCost(tok, eff) : null
+  const est = tok && (tok.in > 0 || tok.out > 0) ? dayEstimate(pid, tok, custom) : null
+  const sch = scheduleState(pid)
 
   const cell = { display: 'flex', flexDirection: 'column', gap: 3 }
   const lbl = { fontSize: 11, opacity: 0.65 }
@@ -221,7 +223,8 @@ function PriceRow({ pid }) {
       jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }, children: [
         jsx('strong', { style: { fontSize: 12.5 }, children: '单价（每百万 tokens）' }),
         jsx('span', { style: { fontSize: 11, opacity: 0.6 },
-          children: '留空 = 默认牌价 · ' + (def.note || '无默认牌价，留空不估算') }),
+          children: '留空 = 默认牌价 · ' + (def.note || '无默认牌价，留空不估算')
+            + (SCHEDULES[pid] ? ' · ' + SCHEDULES[pid].note : '') }),
       ] }),
       jsxs('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }, children:
         PRICE_FIELDS.map(([f, label]) => jsx('div', { style: cell, children: [
@@ -235,9 +238,10 @@ function PriceRow({ pid }) {
         ] }, f)),
       }),
       jsx('div', { style: { fontSize: 11.5, opacity: 0.7, lineHeight: 1.5 }, children:
-        est != null
+        (est != null
           ? '今日估算：' + money2(est, eff.cur) + '（输入 ' + fmtTokens(tok.in) + ' / 输出 ' + fmtTokens(tok.out) + ' tok）'
-          : '今日估算：今日暂无 token 用量' }),
+          : '今日估算：今日暂无 token 用量')
+          + (sch ? ' · 当前' + sch.label + (sch.peak ? '（原价）' : ' ×' + sch.sc.discMult) : '') }),
     ],
   })
 }
