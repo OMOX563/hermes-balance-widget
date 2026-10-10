@@ -298,24 +298,27 @@ try {
     { cur: 'CNY', in: 1, out: 1, hit: 0 })
   assert.equal(cost3, 0, 'inHit clamped to inTotal (all billed at hit=0)')
   // 今日 token 观测：增量、换会话回卷、跨天重置（exported for test）
+  // now 注入北京 12:00（mimo 高峰）——不注入的话凌晨（雷峰塔时段）跑测试
+  // 增量会分流进 d 桶，下面按 base 桶断言就会挂；分时分流本身由 ⑤e 覆盖
+  const peakNoon = new Date('2026-10-14T04:00:00Z')
   const mem = new Map()
   const ctxT = { storage: { get: (k, d) => (mem.has(k) ? mem.get(k) : d), set: (k, v) => mem.set(k, v) } }
-  mod.observeTokens(ctxT, 'mimo', { input: 1000, output: 100, cache_hit_pct: 50 })
+  mod.observeTokens(ctxT, 'mimo', { input: 1000, output: 100, cache_hit_pct: 50 }, peakNoon)
   let t = mod.todayTokens(ctxT, 'mimo')
   assert.equal(t.in, 0, 'first sight = baseline, no accounting')
-  mod.observeTokens(ctxT, 'mimo', { input: 3000, output: 400, cache_hit_pct: 50 })
+  mod.observeTokens(ctxT, 'mimo', { input: 3000, output: 400, cache_hit_pct: 50 }, peakNoon)
   t = mod.todayTokens(ctxT, 'mimo')
   assert.equal(t.in, 2000, 'delta accounted')
   assert.equal(t.out, 300, 'output delta accounted')
   assert.equal(t.inHit, 1000, 'hit split = delta × pct')
-  mod.observeTokens(ctxT, 'mimo', { input: 500, output: 50, cache_hit_pct: 50 })
+  mod.observeTokens(ctxT, 'mimo', { input: 500, output: 50, cache_hit_pct: 50 }, peakNoon)
   t = mod.todayTokens(ctxT, 'mimo')
   assert.equal(t.in, 2500, 'session reset → current value fully accounted')
   assert.equal(mod.todayTokens(ctxT, 'other'), null, 'untracked pid → null')
   // 跨天：day 不匹配 → todayTokens null，observeTokens 重置基线
   mem.set(mod.tokenKey('mimo'), Object.assign({}, t, { day: '2000-01-01' }))
   assert.equal(mod.todayTokens(ctxT, 'mimo'), null, 'stale day → null')
-  mod.observeTokens(ctxT, 'mimo', { input: 9999, output: 999, cache_hit_pct: 0 })
+  mod.observeTokens(ctxT, 'mimo', { input: 9999, output: 999, cache_hit_pct: 0 }, peakNoon)
   t = mod.todayTokens(ctxT, 'mimo')
   assert.equal(t.day, new Date().toISOString().slice(0, 10), 'new day re-baselined')
   assert.equal(t.in, 0, 'cross-day: old accumulation not carried over')
@@ -426,6 +429,24 @@ try {
   assert.ok(!src.includes("rows.push(['今日估算', money("), 'duplicate estimate row removed')
   assert.ok(!src.includes("rows.push(['今日估算', est.why)"), 'why row no longer a detail row')
   assert.ok(src.includes('sub = est.why'), 'why surfaces in headline sub instead')
+
+  /* ── ⑤g 今日已用读键（曾因双重 obs. 前缀恒为 0）─────────────────────── */
+  {
+    const memU = new Map()
+    const ctxU = { storage: { get: (k, v) => (memU.has(k) ? memU.get(k) : v), set: (k, v) => memU.set(k, v) } }
+    const today = new Date().toISOString().slice(0, 10)
+    memU.set('obs.deepseek', { day: today, last: 42.5, used: 8.72 })
+    assert.equal(mod.todayUsed(ctxU, mod.obsKey('deepseek', 0, undefined)), 8.72,
+      'todayUsed reads the exact obsKey (no double prefix)')
+    assert.equal(mod.todayUsed(ctxU, 'obs.deepseek'), 8.72, 'explicit key path')
+    memU.set('obs.kimi.payg', { day: today, last: 1, used: 2.5 })
+    assert.equal(mod.todayUsed(ctxU, mod.obsKey('kimi', 1, 'payg')), 2.5, 'multi-source keyed read')
+    memU.set('obs.stale', { day: '2000-01-01', used: 9 })
+    assert.equal(mod.todayUsed(ctxU, 'obs.stale'), 0, 'stale day resets to 0')
+    assert.equal(mod.todayUsed(null, 'obs.deepseek'), null, 'no ctx → null')
+    // 实现不得再拼 obs. 前缀
+    assert.ok(!src.includes("ctx.storage.get('obs.' + "), 'no double obs. prefix in reader')
+  }
 
   /* ── ⑥ 注册结构 ─────────────────────────────────────────────────────── */
   const contributions = []
