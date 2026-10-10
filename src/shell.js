@@ -27,6 +27,8 @@ import { fetchSource } from './balance.js'
 import { DEFAULT_PRICES, SCHEDULES, effectivePrices, estimateCost, dayEstimate, scheduleState, priceKey, tokenKey, fmtTokens } from './pricing.js'
 
 const ID = 'hermes-balance-widget'
+/** 版本号：发布时与 git tag 同步（Releases 里的 plugin.js 资产即此版本）。 */
+export const VERSION = '1.1.0'
 
 /** Phase 1 的取数结果只活在组件态里，不落 storage。 */
 let gCtx = null
@@ -387,6 +389,8 @@ function SettingsPage() {
         style: { display: 'flex', flexDirection: 'column', gap: 10 },
         children: PROVIDER_ORDER.map((pid) => jsx(ProviderRow, { pid }, pid)),
       }),
+      jsx('p', { style: { fontSize: 11.5, opacity: 0.5, margin: '2px 0 8px', textAlign: 'center' },
+        children: '余额挂件 v' + VERSION + ' · 单文件磁盘插件（plugin.js）· key 只存本机' }),
     ],
   })
 }

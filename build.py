@@ -5,7 +5,8 @@ hermes-balance-widget 构装脚本
 src/providers.js + src/pricing.js + src/balance.js + src/widget.js
 （模块源原样拼接，ESM 多 export 合法）+ src/shell.js（剥离相对 import）
 → plugin.js 单文件。
-九家形象（assets/compact/*.jpg）以 base64 data URI 注入 MASCOTS 表。
+九家形象（assets/transparent/*.webp，紧裁到 alpha bbox）以 base64 data URI
+注入 MASCOTS 表。
 
 每处手术 assert 精确命中；node --check 语法门，不过不写产物。
 用法：python build.py

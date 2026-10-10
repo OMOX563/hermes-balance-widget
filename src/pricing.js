@@ -24,8 +24,8 @@ export function tokenKey(pid) { return 'tk.' + pid }
 
 /** 每家的默认牌价（每百万 tokens，cur 为该厂商展示币种）。 */
 export const DEFAULT_PRICES = {
-  deepseek: { cur: 'CNY', in: 3, out: 6, hit: 0.025, create: null,
-    note: 'DeepSeek V4：缓存命中 0.025 / 未命中 3 / 输出 6 元每 M（2026-05 社区报道）' },
+  deepseek: { cur: 'CNY', in: 2, out: 8, hit: 0.04, create: null,
+    note: 'DeepSeek V4.1-Flash：高峰 输入 2 / 输出 8 / 缓存命中 0.04 元每 M（空闲自动 ×0.5 = 1/4/0.02）' },
   minimax: { cur: 'CNY', in: 7.2, out: 36, hit: null, create: null,
     note: 'MiniMax M2.7 官方 $1/$5（按 ¥7.2 折 ¥7.2/¥36 每 M；M3 为 $0.30/$1.20）' },
   glm: { cur: 'CNY', in: 0.8, out: 2.8, hit: 0.23, create: null,
