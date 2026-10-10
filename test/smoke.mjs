@@ -419,6 +419,13 @@ try {
   // 渲染接线：纯探活不再出现旧回退文案，且徽标为条件挂载
   assert.ok(!src.includes('探活 · 无余额接口'), 'old probe fallback badge string removed')
   assert.ok(src.includes('if (badgeTxt)'), 'badge conditionally attached to header')
+  // 头部整条对纯探活厂商不渲染（名称与徽标一起跳过）
+  assert.ok(src.includes('纯探活厂商整条跳过'), 'header gated on tier text')
+  // 探活明细行已删的三处：状态行、重复估算行、why 行（why 改挂 headline 副标题）
+  assert.ok(!src.includes("rows.push(['状态', r && r.ok"), 'probe ok-status row removed')
+  assert.ok(!src.includes("rows.push(['今日估算', money("), 'duplicate estimate row removed')
+  assert.ok(!src.includes("rows.push(['今日估算', est.why)"), 'why row no longer a detail row')
+  assert.ok(src.includes('sub = est.why'), 'why surfaces in headline sub instead')
 
   /* ── ⑥ 注册结构 ─────────────────────────────────────────────────────── */
   const contributions = []

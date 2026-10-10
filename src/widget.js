@@ -768,9 +768,12 @@ export function mountWidget(ctx, opts = {}) {
     } else {
       // 探活层：官方无余额接口 → 今日 token × 自定义单价估算
       const est = probeEstimate(activePid)
-      if (est != null) {
+      if (est && est.cost != null) {
         big = money(est.cost, est.pr.cur)
         sub = '今日估算 · 按 token 计价'
+      } else if (est && est.why) {
+        big = '—'
+        sub = est.why   // 未配置单价的原因挂这里（明细行不再重复）
       } else {
         big = '✓'
         sub = 'key 可用 · 官方无余额接口'
@@ -803,41 +806,40 @@ export function mountWidget(ctx, opts = {}) {
           : r.status ? ('HTTP ' + r.status + (r.parse ? ' · 字段未命中' : ''))
           : (r.note || '取数失败')])
       } else if (src.kind === 'probe') {
-        rows.push(['状态', r && r.ok ? '✓ key 可用' : '—'])
+        // 「状态 ✓ key 可用」与重复的「今日估算」行已删：
+        // 状态由 headline 的 ✓ 承载，估算值就是 headline 本身
         const est = probeEstimate(activePid)
         if (est && est.tok && (est.tok.in > 0 || est.tok.out > 0)) {
           rows.push(['今日输入', fmtTokens(est.tok.in) + ' tok'])
           rows.push(['今日输出', fmtTokens(est.tok.out) + ' tok'])
-          rows.push(['今日估算', money(est.cost, est.pr.cur)])
           if (est.sch && !est.sch.peak) {
             rows.push(['分时', est.sch.label + ' ×' + est.sch.sc.discMult + ' 已折算'])
           } else if (est.tok.d && (est.tok.d.in > 0 || est.tok.d.out > 0)) {
             rows.push(['分时', '含' + (est.sch ? est.sch.sc.discLabel : '非高峰') + '用量 ×'
               + ((est.sch && est.sch.sc.discMult) || 0.8) + ' 折算'])
           }
-        } else if (est && est.why) {
-          rows.push(['今日估算', est.why])
         }
       }
       return rows
     }
 
     pop.innerHTML = ''
-    const head = document.createElement('div')
-    head.className = 'hbw-p-head'
-    const nameEl = document.createElement('span')
-    nameEl.className = 'hbw-p-name'
-    nameEl.textContent = provider.name
-    head.appendChild(nameEl)
-    // 纯探活厂商不显示层级徽标（无余额接口本就不是需要一眼看到的信息）
+    // 头部（厂商名 + 层级徽标）只在有真余额/订阅层级时出现；
+    // 纯探活厂商整条跳过 —— 角色本身就标识了厂商，气泡直接从数值起
     const badgeTxt = tierBadges(srcs)
     if (badgeTxt) {
+      const head = document.createElement('div')
+      head.className = 'hbw-p-head'
+      const nameEl = document.createElement('span')
+      nameEl.className = 'hbw-p-name'
+      nameEl.textContent = provider.name
+      head.appendChild(nameEl)
       const badge = document.createElement('span')
       badge.className = 'hbw-p-badge'
       badge.textContent = badgeTxt
       head.appendChild(badge)
+      pop.appendChild(head)
     }
-    pop.appendChild(head)
 
     const emitRows = (rows) => {
       for (const kv of rows) {
