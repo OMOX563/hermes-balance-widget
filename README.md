@@ -1,6 +1,9 @@
 # 余额挂件（hermes-balance-widget）
 
-![界面预览：MiMo 角色 + 玻璃气泡](assets/preview.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/grid-dark.jpg">
+  <img alt="九家厂商角色：DeepSeek、Kimi、MiniMax、GLM、MiMo、ChatGPT、Claude、Gemini、Grok" src="assets/grid-light.jpg" width="820">
+</picture>
 
 Hermes 桌面客户端右下角的常驻余额挂件：一个卡通角色贴在屏幕角上，**点一下弹出漫画式玻璃气泡**，显示九家厂商的余额 / 订阅额度 / 今日用量——DeepSeek · MiniMax · 智谱 GLM · Kimi · MiMo · ChatGPT · Claude · Gemini · Grok。**随你当前使用的模型自动换角色**（按模型名关键词匹配，不分大小写）；探活厂商按本机 token 用量估算消费；DeepSeek / GLM / MiMo 三家按官方分时规则**自动切价**。
 
@@ -59,6 +62,8 @@ Hermes 桌面客户端右下角的常驻余额挂件：一个卡通角色贴在�
 4. 回到插件页点 **刷新** ↻
 
 **成功信号**：出现 toast「💰 余额挂件插件已加载 · 设置入口：侧栏「余额挂件」」，插件列表里出现「余额挂件」条目，右下角出现挂件角色。
+
+![界面示例：点角色弹出的玻璃气泡（探活厂商显示今日估算与当前时段）](assets/preview.png)
 
 > ⚠️ 改动插件目录里的**单个文件不会触发自动重载**（监视器只盯目录级事件）——每次都要手动点「刷新」。
 
