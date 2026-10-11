@@ -113,6 +113,13 @@ finally:
 with open(OUT, 'w', encoding='utf-8', newline='\n') as f:
     f.write(plugin)
 
+# Catalog 入口（plugin-catalog 的 desktop 形态）：与根产物逐字节同内容。
+DENTRY = os.path.join(HERE, 'desktop', 'plugin.js')
+os.makedirs(os.path.dirname(DENTRY), exist_ok=True)
+with open(DENTRY, 'w', encoding='utf-8', newline='\n') as f:
+    f.write(plugin)
+
 print('OK -> %s (%.1f KB)' % (OUT, os.path.getsize(OUT) / 1024))
+print('OK -> %s (%.1f KB)' % (DENTRY, os.path.getsize(DENTRY) / 1024))
 print('  providers: 9, mascots: %d (%d KB raw), shell lines: %d'
       % (len(ids), total // 1024, shell.count('\n')))
